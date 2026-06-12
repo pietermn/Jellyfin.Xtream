@@ -15,6 +15,19 @@
             <span>Override metadata with TMDB</span>
           </label>
         </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label>
+            <input is="emby-checkbox" id="StrmExportEnabled" name="StrmExportEnabled" type="checkbox" />
+            <span>Export selected movies as STRM files</span>
+          </label>
+        </div>
+        <div class="inputContainer">
+          <label class="inputLabel inputLabelUnfocused" for="StrmExportPath">Movie STRM export folder</label>
+          <input id="StrmExportPath" name="StrmExportPath" type="text" is="emby-input" />
+          <div class="fieldDescription">
+            Folder on the Jellyfin server where movie STRM files are written. Add this folder as a normal Movies library in Jellyfin.
+          </div>
+        </div>
         <div class="sectionTitleContainer flex align-items-center">
           <h2 class="sectionTitle">Video On-demand selection</h2>
         </div>

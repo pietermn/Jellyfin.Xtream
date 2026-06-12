@@ -70,6 +70,26 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool IsTmdbVodOverride { get; set; } = true;
 
     /// <summary>
+    /// Gets or sets a value indicating whether STRM export is enabled for VOD.
+    /// </summary>
+    public bool IsVodStrmExportEnabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets the folder where VOD STRM files are exported.
+    /// </summary>
+    public string VodStrmExportPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether STRM export is enabled for series.
+    /// </summary>
+    public bool IsSeriesStrmExportEnabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets the folder where series STRM files are exported.
+    /// </summary>
+    public string SeriesStrmExportPath { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets the channels displayed in Live TV.
     /// </summary>
     public SerializableDictionary<int, HashSet<int>> LiveTv { get; set; } = [];

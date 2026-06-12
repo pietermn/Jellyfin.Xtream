@@ -9,6 +9,19 @@
             <span>Show this channel to users</span>
           </label>
         </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label>
+            <input is="emby-checkbox" id="StrmExportEnabled" name="StrmExportEnabled" type="checkbox" />
+            <span>Export selected series as STRM files</span>
+          </label>
+        </div>
+        <div class="inputContainer">
+          <label class="inputLabel inputLabelUnfocused" for="StrmExportPath">Series STRM export folder</label>
+          <input id="StrmExportPath" name="StrmExportPath" type="text" is="emby-input" />
+          <div class="fieldDescription">
+            Folder on the Jellyfin server where series STRM files are written. Add this folder as a normal Shows library in Jellyfin.
+          </div>
+        </div>
         <div class="sectionTitleContainer flex align-items-center">
           <h2 class="sectionTitle">Series selection</h2>
         </div>
