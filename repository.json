@@ -1,0 +1,20 @@
+[
+  {
+    "category": "LiveTV",
+    "description": "Stream Live IPTV, Video On-Demand, and Series from an Xtream-compatible server using this plugin.\n",
+    "guid": "5d774c35-8567-46d3-a950-9bb8227a0c5d",
+    "name": "Jellyfin Xtream",
+    "overview": "Stream content from an Xtream-compatible server.",
+    "owner": "pietermn",
+    "versions": [
+      {
+        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, and update Jellyfin 10.11 dependencies.",
+        "checksum": "2975357f3840ce5f6241955feb7c9ccd",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.2/jellyfin-xtream_0.8.2.0.zip",
+        "targetAbi": "10.11.11.0",
+        "timestamp": "2026-06-12T16:57:06Z",
+        "version": "0.8.2.0"
+      }
+    ]
+  }
+]
