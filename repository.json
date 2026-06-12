@@ -9,10 +9,10 @@
     "versions": [
       {
         "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, and add optional STRM export for selected movies and series.",
-        "checksum": "e01c71f17b3311e39d48f6db6926357b",
+        "checksum": "f30caddb2369df4b78985b5e7caa9f72",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.4/jellyfin-xtream_0.8.4.0.zip",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-06-12T17:43:23Z",
+        "timestamp": "2026-06-12T17:54:36Z",
         "version": "0.8.4.0"
       }
     ]
