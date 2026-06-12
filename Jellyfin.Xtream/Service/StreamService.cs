@@ -140,9 +140,53 @@ public partial class StreamService(IXtreamClient xtreamClient)
 
         return new ParsedName
         {
-            Title = title[stripLength..].Trim(),
+            Title = CleanupName(title[stripLength..]),
             Tags = [.. tags],
         };
+    }
+
+    private static string CleanupName(string name)
+    {
+        string result = name.Trim();
+        string rules = Plugin.Instance.Configuration.NameCleanupRules;
+        if (string.IsNullOrWhiteSpace(rules))
+        {
+            return result;
+        }
+
+        foreach (string rule in rules.Split(["\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (rule[0] == '#')
+            {
+                continue;
+            }
+
+            string[] parts = rule.Split("=>", 2, StringSplitOptions.TrimEntries);
+            string pattern = parts[0];
+            string replacement = parts.Length > 1 ? DecodeReplacement(parts[1]) : string.Empty;
+            if (string.IsNullOrWhiteSpace(pattern))
+            {
+                continue;
+            }
+
+            try
+            {
+                result = Regex.Replace(result, pattern, replacement, RegexOptions.CultureInvariant);
+            }
+            catch (ArgumentException)
+            {
+                // Ignore invalid user-defined cleanup rules instead of breaking channel loading.
+            }
+        }
+
+        return WhitespaceRegex().Replace(result, " ").Trim();
+    }
+
+    private static string DecodeReplacement(string replacement)
+    {
+        return replacement
+            .Replace("\\t", "\t", StringComparison.Ordinal)
+            .Replace("\\n", "\n", StringComparison.Ordinal);
     }
 
     private bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
@@ -197,7 +241,7 @@ public partial class StreamService(IXtreamClient xtreamClient)
         return new ChannelItemInfo()
         {
             Id = ToGuid(prefix, category.CategoryId, 0, 0).ToString(),
-            Name = category.CategoryName,
+            Name = parsedName.Title,
             Tags = new List<string>(parsedName.Tags),
             Type = ChannelItemType.Folder,
         };
@@ -450,4 +494,7 @@ public partial class StreamService(IXtreamClient xtreamClient)
     // Pipe variants: | (U+007C), │ (U+2502), ┃ (U+2503), ｜ (U+FF5C)
     [GeneratedRegex(@"\[([^\]]+)\]|[|│┃｜]\s*([^|│┃｜]+?)\s*[|│┃｜]")]
     private static partial Regex TagRegex();
+
+    [GeneratedRegex(@"\s+")]
+    private static partial Regex WhitespaceRegex();
 }
