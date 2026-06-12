@@ -39,7 +39,7 @@ cat > "$output" <<JSON
     "owner": "${owner}",
     "versions": [
       {
-        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, and update Jellyfin 10.11 dependencies.",
+        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, and add configurable regex cleanup rules for stream names.",
         "checksum": "${checksum}",
         "sourceUrl": "${source_url}",
         "targetAbi": "10.11.11.0",
