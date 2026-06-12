@@ -34,7 +34,7 @@ cat > "$output" <<JSON
     "category": "LiveTV",
     "description": "Stream Live IPTV, Video On-Demand, and Series from an Xtream-compatible server using this plugin.\\n",
     "guid": "5d774c35-8567-46d3-a950-9bb8227a0c5d",
-    "name": "Jellyfin Xtream",
+    "name": "Jelly Xtream",
     "overview": "Stream content from an Xtream-compatible server.",
     "owner": "${owner}",
     "versions": [
