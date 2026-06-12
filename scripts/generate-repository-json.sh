@@ -8,7 +8,7 @@ fi
 
 owner="$1"
 repo="$2"
-version="${3:-0.8.2.0}"
+version="${3:-0.8.4.0}"
 tag="v${version%".0"}"
 zip_name="jellyfin-xtream_${version}.zip"
 dist_zip="dist/Jellyfin.Xtream_${version}.zip"
@@ -39,7 +39,7 @@ cat > "$output" <<JSON
     "owner": "${owner}",
     "versions": [
       {
-        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, and add configurable regex cleanup rules for stream names.",
+        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, and add optional STRM export for selected movies and series.",
         "checksum": "${checksum}",
         "sourceUrl": "${source_url}",
         "targetAbi": "10.11.11.0",
