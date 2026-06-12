@@ -20,6 +20,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Configuration;
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
@@ -34,6 +35,8 @@ namespace Jellyfin.Xtream.Service;
 /// </summary>
 public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 {
+    private const int StreamBufferSize = 126 * 1024 * 1024;
+
     /// <summary>
     /// The global constant for the restream tuner host.
     /// </summary>
@@ -68,7 +71,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         _logger = logger;
         MediaSource = mediaSource;
 
-        _buffer = new WrappedBufferStream(16 * 1024 * 1024); // 16MiB
+        _buffer = new WrappedBufferStream(StreamBufferSize);
         _tokenSource = new CancellationTokenSource();
 
         OriginalStreamId = MediaSource.Id;
@@ -112,20 +115,18 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         _logger.LogInformation("Starting restream for channel {ChannelId}.", channelId);
 
         // Response stream is disposed manually.
-        HttpResponseMessage response = await _httpClientFactory.CreateClient(NamedClient.Default)
-            .GetAsync(_url, HttpCompletionOption.ResponseHeadersRead, openCancellationToken)
-            .ConfigureAwait(true);
+        HttpResponseMessage response = await SendStreamRequest(_url, openCancellationToken).ConfigureAwait(true);
         _logger.LogDebug("Stream for channel {ChannelId} using url {Url}", channelId, _url);
 
         // Handle a manual redirect in the case of a HTTPS to HTTP downgrade.
         if (_redirects.Contains(response.StatusCode))
         {
             _logger.LogDebug("Stream for channel {ChannelId} redirected to url {Url}", channelId, response.Headers.Location);
-            response = await _httpClientFactory.CreateClient(NamedClient.Default)
-                .GetAsync(response.Headers.Location, HttpCompletionOption.ResponseHeadersRead, openCancellationToken)
-                .ConfigureAwait(true);
+            response.Dispose();
+            response = await SendStreamRequest(response.Headers.Location, openCancellationToken).ConfigureAwait(true);
         }
 
+        response.EnsureSuccessStatusCode();
         _inputStream = await response.Content.ReadAsStreamAsync(CancellationToken.None).ConfigureAwait(false);
         _copyTask = _inputStream.CopyToAsync(_buffer, _tokenSource.Token)
             .ContinueWith(
@@ -163,6 +164,25 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
         _logger.LogInformation("Opening restream {Count} for channel {ChannelId}.", ConsumerCount, MediaSource.Id);
         return new WrappedBufferReadStream(_buffer);
+    }
+
+    private Task<HttpResponseMessage> SendStreamRequest(Uri? uri, CancellationToken cancellationToken)
+    {
+        return SendStreamRequest(uri?.ToString() ?? throw new ArgumentNullException(nameof(uri)), cancellationToken);
+    }
+
+    private async Task<HttpResponseMessage> SendStreamRequest(string uri, CancellationToken cancellationToken)
+    {
+        using HttpRequestMessage request = new(HttpMethod.Get, uri);
+        PluginConfiguration config = Plugin.Instance.Configuration;
+        if (!string.IsNullOrWhiteSpace(config.UserAgent))
+        {
+            request.Headers.TryAddWithoutValidation("User-Agent", config.UserAgent);
+        }
+
+        return await _httpClientFactory.CreateClient(NamedClient.Default)
+            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>

@@ -10,13 +10,14 @@ The Jellyfin.Xtream plugin can be used to integrate the content provided by an [
 ## Installation
 
 The plugin can be installed using a custom plugin repository.
+For this custom fork, publish your own repository first using [docs/OWN_REPOSITORY.md](docs/OWN_REPOSITORY.md).
 To add the repository, follow these steps:
 
 1. Open your admin dashboard and navigate to `Plugins`.
 1. Select the `Repositories` tab on the top of the page.
 1. Click the `+` symbol to add a repository.
-1. Enter `Jellyfin.Xtream` as the repository name.
-1. Enter [`https://kevinjil.github.io/Jellyfin.Xtream/repository.json`](https://kevinjil.github.io/Jellyfin.Xtream/repository.json) as the repository url.
+1. Enter `Jellyfin.Xtream Custom` as the repository name.
+1. Enter `https://<github-user>.github.io/<repository-name>/repository.json` as the repository url.
 1. Click save.
 
 To install or update the plugin, follow these steps:

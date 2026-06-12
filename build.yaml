@@ -1,8 +1,8 @@
 ---
 name: "Jellyfin Xtream"
 guid: "5d774c35-8567-46d3-a950-9bb8227a0c5d"
-version: "0.8.1.0"
-targetAbi: "10.11.0.0"
+version: "0.8.2.0"
+targetAbi: "10.11.11.0"
 framework: "net9.0"
 overview: "Stream content from an Xtream-compatible server."
 description: >
@@ -12,4 +12,4 @@ owner: "Kevinjil"
 artifacts:
   - "Jellyfin.Xtream.dll"
 changelog: >
-  changelog
+  Increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, and update Jellyfin 10.11 dependencies.
