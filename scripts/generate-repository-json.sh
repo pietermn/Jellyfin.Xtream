@@ -42,7 +42,7 @@ cat > "$output" <<JSON
         "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, and add optional STRM export for selected movies and series.",
         "checksum": "${checksum}",
         "sourceUrl": "${source_url}",
-        "targetAbi": "10.11.11.0",
+        "targetAbi": "10.11.0.0",
         "timestamp": "${timestamp}",
         "version": "${version}"
       }
