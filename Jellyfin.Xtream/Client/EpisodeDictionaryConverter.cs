@@ -78,7 +78,7 @@ public class EpisodeDictionaryConverter : JsonConverter
 
     private static Dictionary<int, ICollection<Episode>> ReadEpisodeArray(JArray token, JsonSerializer serializer)
     {
-        var episodes = token.ToObject<List<Episode>>(serializer) ?? [];
+        var episodes = ReadEpisodes(token, serializer);
         return episodes
             .GroupBy(episode => episode.Season)
             .ToDictionary(group => group.Key, group => (ICollection<Episode>)group.ToList());
@@ -88,7 +88,7 @@ public class EpisodeDictionaryConverter : JsonConverter
     {
         return token.Type switch
         {
-            JTokenType.Array => token.ToObject<List<Episode>>(serializer) ?? [],
+            JTokenType.Array => token.Children().SelectMany(child => ReadEpisodes(child, serializer)).ToList(),
             JTokenType.Object => token.ToObject<Episode>(serializer) is Episode episode ? [episode] : [],
             JTokenType.Null => [],
             _ => throw new JsonReaderException("The JsonReader points to an unexpected point."),
