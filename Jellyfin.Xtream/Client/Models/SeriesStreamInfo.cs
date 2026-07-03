@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System.Collections.Generic;
+using Jellyfin.Xtream.Client;
 using Newtonsoft.Json;
 
 #pragma warning disable CS1591
@@ -30,6 +31,7 @@ public class SeriesStreamInfo
     public SeriesInfo Info { get; set; } = new SeriesInfo();
 
     [JsonProperty("episodes")]
+    [JsonConverter(typeof(EpisodeDictionaryConverter))]
 #pragma warning disable CA2227
     public Dictionary<int, ICollection<Episode>> Episodes { get; set; } = new Dictionary<int, ICollection<Episode>>();
 #pragma warning restore CA2227
