@@ -32,10 +32,10 @@ namespace Jellyfin.Xtream.Service;
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 public class StrmExportService(ILogger<StrmExportService> logger)
 {
-    private static readonly char[] _invalidFileNameChars = Path.GetInvalidFileNameChars();
     private const int MaxDirectoryNameLength = 96;
     private const int MaxEpisodeTitleLength = 72;
     private const int MaxFileNameLength = 180;
+    private static readonly char[] _invalidFileNameChars = Path.GetInvalidFileNameChars();
 
     /// <summary>
     /// Exports configured STRM files.
@@ -95,7 +95,7 @@ public class StrmExportService(ILogger<StrmExportService> logger)
 
     private static string BuildFileName(string name, string extension)
     {
-        string safeExtension = extension.StartsWith('.', StringComparison.Ordinal) ? extension : $".{extension}";
+        string safeExtension = extension.StartsWith(".", StringComparison.Ordinal) ? extension : $".{extension}";
         int maxNameLength = MaxFileNameLength - safeExtension.Length;
         return $"{SafePathPart(name, maxNameLength)}{safeExtension}";
     }
