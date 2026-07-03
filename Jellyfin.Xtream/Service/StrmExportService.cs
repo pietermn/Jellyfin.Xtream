@@ -46,7 +46,7 @@ public class StrmExportService(ILogger<StrmExportService> logger)
     public async Task ExportAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
-        List<Func<CancellationToken, Task>> enabledExports = [];
+        List<Func<Action<double>, CancellationToken, Task>> enabledExports = [];
 
         if (config.IsVodStrmExportEnabled && !string.IsNullOrWhiteSpace(config.VodStrmExportPath))
         {
@@ -64,10 +64,19 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             return;
         }
 
+        progress.Report(0);
         for (int i = 0; i < enabledExports.Count; i++)
         {
-            await enabledExports[i](cancellationToken).ConfigureAwait(false);
-            progress.Report((i + 1) * 100.0 / enabledExports.Count);
+            double phaseStart = i * 100.0 / enabledExports.Count;
+            double phaseSize = 100.0 / enabledExports.Count;
+            void ReportPhaseProgress(double phaseProgress)
+            {
+                progress.Report(phaseStart + (Math.Clamp(phaseProgress, 0, 100) * phaseSize / 100));
+            }
+
+            ReportPhaseProgress(0);
+            await enabledExports[i](ReportPhaseProgress, cancellationToken).ConfigureAwait(false);
+            ReportPhaseProgress(100);
         }
     }
 
@@ -132,38 +141,50 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         }
     }
 
-    private async Task ExportVodAsync(CancellationToken cancellationToken)
+    private async Task ExportVodAsync(Action<double> progress, CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
         Directory.CreateDirectory(config.VodStrmExportPath);
         HashSet<string> expectedPaths = new(StringComparer.Ordinal);
         bool hasFailures = false;
+        List<StreamInfo> streamsToExport = [];
+        int categoryCount = config.Vod.Count;
+        int categoriesProcessed = 0;
 
         foreach (KeyValuePair<int, HashSet<int>> categoryConfig in config.Vod)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
-            foreach (StreamInfo stream in streams.Where(stream => IsConfigured(config.Vod, categoryConfig.Key, stream.StreamId)))
-            {
-                try
-                {
-                    ParsedName parsedName = StreamService.ParseName(stream.Name);
-                    string movieName = SafePathPart(parsedName.Title);
-                    string containerExtension = string.IsNullOrWhiteSpace(stream.ContainerExtension) ? "strm" : $"{SafePathPart(stream.ContainerExtension, 16)}.strm";
-                    string fileName = BuildFileName($"{movieName} [{stream.StreamId}]", containerExtension);
-                    string path = Path.Combine(config.VodStrmExportPath, movieName, fileName);
-                    string url = GetStreamUrl(StreamType.Vod, stream.StreamId, stream.ContainerExtension);
+            streamsToExport.AddRange(streams.Where(stream => IsConfigured(config.Vod, categoryConfig.Key, stream.StreamId)));
+            categoriesProcessed++;
+            progress(categoryCount == 0 ? 10 : categoriesProcessed * 10.0 / categoryCount);
+        }
 
-                    logger.LogDebug("Exporting VOD STRM file {Path}", path);
-                    await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    hasFailures = true;
-                    logger.LogError(ex, "Failed to export VOD STRM file for stream {StreamId}", stream.StreamId);
-                }
+        int streamsProcessed = 0;
+        foreach (StreamInfo stream in streamsToExport)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                ParsedName parsedName = StreamService.ParseName(stream.Name);
+                string movieName = SafePathPart(parsedName.Title);
+                string containerExtension = string.IsNullOrWhiteSpace(stream.ContainerExtension) ? "strm" : $"{SafePathPart(stream.ContainerExtension, 16)}.strm";
+                string fileName = BuildFileName($"{movieName} [{stream.StreamId}]", containerExtension);
+                string path = Path.Combine(config.VodStrmExportPath, movieName, fileName);
+                string url = GetStreamUrl(StreamType.Vod, stream.StreamId, stream.ContainerExtension);
+
+                logger.LogDebug("Exporting VOD STRM file {Path}", path);
+                await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
             }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                hasFailures = true;
+                logger.LogError(ex, "Failed to export VOD STRM file for stream {StreamId}", stream.StreamId);
+            }
+
+            streamsProcessed++;
+            progress(10 + (streamsToExport.Count == 0 ? 85 : streamsProcessed * 85.0 / streamsToExport.Count));
         }
 
         if (hasFailures)
@@ -172,31 +193,54 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             return;
         }
 
+        progress(95);
         DeleteStaleStrmFiles(config.VodStrmExportPath, expectedPaths);
+        progress(100);
     }
 
-    private async Task ExportSeriesAsync(CancellationToken cancellationToken)
+    private async Task ExportSeriesAsync(Action<double> progress, CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
         Directory.CreateDirectory(config.SeriesStrmExportPath);
         HashSet<string> expectedPaths = new(StringComparer.Ordinal);
         bool hasFailures = false;
+        List<Series> seriesToExport = [];
+        int categoryCount = config.Series.Count;
+        int categoriesProcessed = 0;
 
         foreach (KeyValuePair<int, HashSet<int>> categoryConfig in config.Series)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             IEnumerable<Series> seriesItems = await Plugin.Instance.StreamService.GetSeries(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
-            foreach (Series series in seriesItems.Where(series => IsConfigured(config.Series, categoryConfig.Key, series.SeriesId)))
+            seriesToExport.AddRange(seriesItems.Where(series => IsConfigured(config.Series, categoryConfig.Key, series.SeriesId)));
+            categoriesProcessed++;
+            progress(categoryCount == 0 ? 10 : categoriesProcessed * 10.0 / categoryCount);
+        }
+
+        int seriesProcessed = 0;
+        foreach (Series series in seriesToExport)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
             {
-                try
+                await ExportSeriesItemAsync(
+                    series,
+                    expectedPaths,
+                    (seriesProgress) => progress(10 + ((seriesProcessed + (Math.Clamp(seriesProgress, 0, 100) / 100)) * 85.0 / seriesToExport.Count)),
+                    cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                hasFailures = true;
+                logger.LogError(ex, "Failed to export series STRM files for series {SeriesId}", series.SeriesId);
+            }
+            finally
+            {
+                seriesProcessed++;
+                if (seriesToExport.Count > 0)
                 {
-                    await ExportSeriesItemAsync(series, expectedPaths, cancellationToken).ConfigureAwait(false);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    hasFailures = true;
-                    logger.LogError(ex, "Failed to export series STRM files for series {SeriesId}", series.SeriesId);
+                    progress(10 + (seriesProcessed * 85.0 / seriesToExport.Count));
                 }
             }
         }
@@ -207,15 +251,19 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             return;
         }
 
+        progress(95);
         DeleteStaleStrmFiles(config.SeriesStrmExportPath, expectedPaths);
+        progress(100);
     }
 
-    private async Task ExportSeriesItemAsync(Series series, HashSet<string> expectedPaths, CancellationToken cancellationToken)
+    private async Task ExportSeriesItemAsync(Series series, HashSet<string> expectedPaths, Action<double> progress, CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
         ParsedName seriesName = StreamService.ParseName(series.Name);
         string safeSeriesName = SafePathPart(seriesName.Title);
         SeriesStreamInfo seriesInfo = await Plugin.Instance.StreamService.GetSeriesStreamsBySeriesAsync(series.SeriesId, cancellationToken).ConfigureAwait(false);
+        int totalEpisodes = seriesInfo.Episodes.Values.Sum(episodes => episodes.Count);
+        int episodesProcessed = 0;
 
         foreach (KeyValuePair<int, ICollection<Episode>> season in seriesInfo.Episodes.OrderBy(season => season.Key))
         {
@@ -231,7 +279,11 @@ public class StrmExportService(ILogger<StrmExportService> logger)
 
                 logger.LogDebug("Exporting series STRM file {Path}", path);
                 await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
+                episodesProcessed++;
+                progress(totalEpisodes == 0 ? 100 : episodesProcessed * 100.0 / totalEpisodes);
             }
         }
+
+        progress(100);
     }
 }
