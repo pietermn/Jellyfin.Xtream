@@ -8,6 +8,14 @@
     "owner": "pietermn",
     "versions": [
       {
+        "changelog": "Fix STRM export for Xtream providers that return series episodes as nested arrays.",
+        "checksum": "43e75a070c1644fef1186062ca3005a3",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.7/jelly-xtream_0.8.7.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T15:18:34Z",
+        "version": "0.8.7.0"
+      },
+      {
         "changelog": "Fix STRM export for Xtream providers that return series episodes as a flat array.",
         "checksum": "95aa1070f9b8beec8b8f166a8be470d4",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.6/jelly-xtream_0.8.6.0.zip",
