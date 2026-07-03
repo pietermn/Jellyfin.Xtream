@@ -84,7 +84,7 @@ public class EpisodeDictionaryConverter : JsonConverter
             .ToDictionary(group => group.Key, group => (ICollection<Episode>)group.ToList());
     }
 
-    private static ICollection<Episode> ReadEpisodes(JToken token, JsonSerializer serializer)
+    private static List<Episode> ReadEpisodes(JToken token, JsonSerializer serializer)
     {
         return token.Type switch
         {
