@@ -95,7 +95,7 @@ public class StrmExportService(ILogger<StrmExportService> logger)
 
     private static string BuildFileName(string name, string extension)
     {
-        string safeExtension = extension.StartsWith(".", StringComparison.Ordinal) ? extension : $".{extension}";
+        string safeExtension = extension.Length > 0 && extension[0] == '.' ? extension : $".{extension}";
         int maxNameLength = MaxFileNameLength - safeExtension.Length;
         return $"{SafePathPart(name, maxNameLength)}{safeExtension}";
     }
