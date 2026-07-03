@@ -6,6 +6,9 @@ on:
       - released
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@master
@@ -28,10 +31,25 @@ jobs:
             sha256sum ${file#./} >> ${file%.*}.sha256
           done
           ls -l
+      - name: Resolve GitHub Release
+        id: release
+        uses: actions/github-script@v7
+        with:
+          script: |-
+            if (context.payload.release?.upload_url) {
+              core.setOutput('upload_url', context.payload.release.upload_url);
+              return;
+            }
+
+            const { data: release } = await github.rest.repos.getLatestRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            core.setOutput('upload_url', release.upload_url);
       - name: Upload GitHub Release assets
         uses: shogo82148/actions-upload-release-asset@v1.10.1
         with:
-          upload_url: ${{ github.event.release.upload_url }}
+          upload_url: ${{ steps.release.outputs.upload_url }}
           asset_path: ./*
   generate:
     runs-on: ubuntu-latest
