@@ -39,6 +39,8 @@ namespace Jellyfin.Xtream.Client;
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDisposable, IXtreamClient
 {
+    private const int MaxQueryAttempts = 3;
+
     private readonly JsonSerializerSettings _serializerSettings = new()
     {
         Error = NullableEventHandler(logger),
@@ -105,8 +107,27 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
     private async Task<T> QueryApi<T>(ConnectionInfo connectionInfo, string urlPath, CancellationToken cancellationToken)
     {
         Uri uri = new Uri(connectionInfo.BaseUrl + urlPath);
-        string jsonContent = await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
+        string jsonContent = await GetStringWithRetryAsync(uri, cancellationToken).ConfigureAwait(false);
         return JsonConvert.DeserializeObject<T>(jsonContent, _serializerSettings)!;
+    }
+
+    private async Task<string> GetStringWithRetryAsync(Uri uri, CancellationToken cancellationToken)
+    {
+        for (int attempt = 1; attempt <= MaxQueryAttempts; attempt++)
+        {
+            try
+            {
+                return await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
+            }
+            catch (HttpRequestException ex) when (attempt < MaxQueryAttempts)
+            {
+                logger.LogWarning(ex, "Xtream API request failed on attempt {Attempt} of {MaxAttempts}; retrying.", attempt, MaxQueryAttempts);
+            }
+
+            await Task.Delay(TimeSpan.FromSeconds(attempt * 2), cancellationToken).ConfigureAwait(false);
+        }
+
+        return await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
     }
 
     public Task<PlayerApi> GetUserAndServerInfoAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
