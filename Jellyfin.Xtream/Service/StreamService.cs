@@ -331,7 +331,7 @@ public partial class StreamService(IXtreamClient xtreamClient)
     public async Task<IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>>> GetEpisodes(int seriesId, int seasonId, CancellationToken cancellationToken)
     {
         SeriesStreamInfo series = await GetSeriesStreamsBySeriesAsync(seriesId, cancellationToken).ConfigureAwait(false);
-        Season? season = series.Seasons.FirstOrDefault(s => s.SeasonId == seasonId);
+        Season? season = series.Seasons.FirstOrDefault(s => s.SeasonNumber == seasonId || s.SeasonId == seasonId);
         return series.Episodes[seasonId].Select((Episode episode) => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, episode));
     }
 

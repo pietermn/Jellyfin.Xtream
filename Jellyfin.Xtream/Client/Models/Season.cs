@@ -37,7 +37,7 @@ public class Season
     public string Overview { get; set; } = string.Empty;
 
     [JsonProperty("season_number")]
-    public int Cast { get; set; }
+    public int SeasonNumber { get; set; }
 
     [JsonProperty("cover")]
     public string Cover { get; set; } = string.Empty;

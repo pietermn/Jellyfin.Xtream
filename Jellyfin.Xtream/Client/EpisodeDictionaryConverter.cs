@@ -78,7 +78,24 @@ public class EpisodeDictionaryConverter : JsonConverter
 
     private static Dictionary<int, ICollection<Episode>> ReadEpisodeArray(JArray token, JsonSerializer serializer)
     {
-        var episodes = ReadEpisodes(token, serializer);
+        var episodes = new List<Episode>();
+        int seasonNumber = 1;
+        foreach (JToken child in token.Children())
+        {
+            List<Episode> childEpisodes = ReadEpisodes(child, serializer);
+            if (child.Type == JTokenType.Array)
+            {
+                foreach (Episode episode in childEpisodes.Where(episode => episode.Season <= 0))
+                {
+                    episode.Season = seasonNumber;
+                }
+
+                seasonNumber++;
+            }
+
+            episodes.AddRange(childEpisodes);
+        }
+
         return episodes
             .GroupBy(episode => episode.Season)
             .ToDictionary(group => group.Key, group => (ICollection<Episode>)group.ToList());

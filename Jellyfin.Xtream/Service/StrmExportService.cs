@@ -33,6 +33,9 @@ namespace Jellyfin.Xtream.Service;
 public class StrmExportService(ILogger<StrmExportService> logger)
 {
     private static readonly char[] _invalidFileNameChars = Path.GetInvalidFileNameChars();
+    private const int MaxDirectoryNameLength = 96;
+    private const int MaxEpisodeTitleLength = 72;
+    private const int MaxFileNameLength = 180;
 
     /// <summary>
     /// Exports configured STRM files.
@@ -78,23 +81,63 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         return config.TryGetValue(category, out HashSet<int>? values) && (values.Count == 0 || values.Contains(id));
     }
 
-    private static string SafePathPart(string name)
+    private static string SafePathPart(string name, int maxLength = MaxDirectoryNameLength)
     {
         string result = _invalidFileNameChars.Aggregate(name, (current, c) => current.Replace(c, ' '));
         result = result.Trim().TrimEnd('.');
+        if (result.Length > maxLength)
+        {
+            result = result[..maxLength].Trim().TrimEnd('.');
+        }
+
         return string.IsNullOrWhiteSpace(result) ? "Unknown" : result;
     }
 
-    private static async Task WriteStrmFileAsync(string path, string url, CancellationToken cancellationToken)
+    private static string BuildFileName(string name, string extension)
+    {
+        string safeExtension = extension.StartsWith('.', StringComparison.Ordinal) ? extension : $".{extension}";
+        int maxNameLength = MaxFileNameLength - safeExtension.Length;
+        return $"{SafePathPart(name, maxNameLength)}{safeExtension}";
+    }
+
+    private static async Task WriteStrmFileAsync(string path, string url, HashSet<string> expectedPaths, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? throw new ArgumentException("Invalid STRM path", nameof(path)));
-        await File.WriteAllTextAsync(path, url + Environment.NewLine, cancellationToken).ConfigureAwait(false);
+        string content = url + Environment.NewLine;
+        expectedPaths.Add(Path.GetFullPath(path));
+        if (File.Exists(path) && string.Equals(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), content, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static void DeleteStaleStrmFiles(string rootPath, HashSet<string> expectedPaths)
+    {
+        foreach (string path in Directory.EnumerateFiles(rootPath, "*.strm", SearchOption.AllDirectories))
+        {
+            if (!expectedPaths.Contains(Path.GetFullPath(path)))
+            {
+                File.Delete(path);
+            }
+        }
+
+        foreach (string path in Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories).OrderByDescending(path => path.Length))
+        {
+            if (!Directory.EnumerateFileSystemEntries(path).Any())
+            {
+                Directory.Delete(path);
+            }
+        }
     }
 
     private async Task ExportVodAsync(CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
         Directory.CreateDirectory(config.VodStrmExportPath);
+        HashSet<string> expectedPaths = new(StringComparer.Ordinal);
+        bool hasFailures = false;
 
         foreach (KeyValuePair<int, HashSet<int>> categoryConfig in config.Vod)
         {
@@ -103,23 +146,41 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
             foreach (StreamInfo stream in streams.Where(stream => IsConfigured(config.Vod, categoryConfig.Key, stream.StreamId)))
             {
-                ParsedName parsedName = StreamService.ParseName(stream.Name);
-                string movieName = SafePathPart(parsedName.Title);
-                string extension = string.IsNullOrWhiteSpace(stream.ContainerExtension) ? "strm" : $"{SafePathPart(stream.ContainerExtension)}.strm";
-                string fileName = $"{movieName}.{extension}";
-                string path = Path.Combine(config.VodStrmExportPath, movieName, fileName);
-                string url = GetStreamUrl(StreamType.Vod, stream.StreamId, stream.ContainerExtension);
+                try
+                {
+                    ParsedName parsedName = StreamService.ParseName(stream.Name);
+                    string movieName = SafePathPart(parsedName.Title);
+                    string containerExtension = string.IsNullOrWhiteSpace(stream.ContainerExtension) ? "strm" : $"{SafePathPart(stream.ContainerExtension, 16)}.strm";
+                    string fileName = BuildFileName($"{movieName} [{stream.StreamId}]", containerExtension);
+                    string path = Path.Combine(config.VodStrmExportPath, movieName, fileName);
+                    string url = GetStreamUrl(StreamType.Vod, stream.StreamId, stream.ContainerExtension);
 
-                logger.LogDebug("Exporting VOD STRM file {Path}", path);
-                await WriteStrmFileAsync(path, url, cancellationToken).ConfigureAwait(false);
+                    logger.LogDebug("Exporting VOD STRM file {Path}", path);
+                    await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    hasFailures = true;
+                    logger.LogError(ex, "Failed to export VOD STRM file for stream {StreamId}", stream.StreamId);
+                }
             }
         }
+
+        if (hasFailures)
+        {
+            logger.LogWarning("Skipping stale VOD STRM cleanup because one or more VOD exports failed.");
+            return;
+        }
+
+        DeleteStaleStrmFiles(config.VodStrmExportPath, expectedPaths);
     }
 
     private async Task ExportSeriesAsync(CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
         Directory.CreateDirectory(config.SeriesStrmExportPath);
+        HashSet<string> expectedPaths = new(StringComparer.Ordinal);
+        bool hasFailures = false;
 
         foreach (KeyValuePair<int, HashSet<int>> categoryConfig in config.Series)
         {
@@ -128,12 +189,28 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             IEnumerable<Series> seriesItems = await Plugin.Instance.StreamService.GetSeries(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
             foreach (Series series in seriesItems.Where(series => IsConfigured(config.Series, categoryConfig.Key, series.SeriesId)))
             {
-                await ExportSeriesItemAsync(series, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await ExportSeriesItemAsync(series, expectedPaths, cancellationToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    hasFailures = true;
+                    logger.LogError(ex, "Failed to export series STRM files for series {SeriesId}", series.SeriesId);
+                }
             }
         }
+
+        if (hasFailures)
+        {
+            logger.LogWarning("Skipping stale series STRM cleanup because one or more series exports failed.");
+            return;
+        }
+
+        DeleteStaleStrmFiles(config.SeriesStrmExportPath, expectedPaths);
     }
 
-    private async Task ExportSeriesItemAsync(Series series, CancellationToken cancellationToken)
+    private async Task ExportSeriesItemAsync(Series series, HashSet<string> expectedPaths, CancellationToken cancellationToken)
     {
         PluginConfiguration config = Plugin.Instance.Configuration;
         ParsedName seriesName = StreamService.ParseName(series.Name);
@@ -146,14 +223,14 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             foreach (Episode episode in season.Value.OrderBy(episode => episode.EpisodeNum))
             {
                 ParsedName episodeName = StreamService.ParseName(episode.Title);
-                string safeEpisodeName = SafePathPart(episodeName.Title);
+                string safeEpisodeName = SafePathPart(episodeName.Title, MaxEpisodeTitleLength);
                 string episodeNumber = episode.EpisodeNum.ToString("00", CultureInfo.InvariantCulture);
-                string fileName = $"{safeSeriesName} - S{season.Key.ToString("00", CultureInfo.InvariantCulture)}E{episodeNumber} - {safeEpisodeName}.strm";
+                string fileName = BuildFileName($"S{season.Key.ToString("00", CultureInfo.InvariantCulture)}E{episodeNumber} - {safeEpisodeName} [{episode.EpisodeId}]", "strm");
                 string path = Path.Combine(config.SeriesStrmExportPath, safeSeriesName, seasonFolder, fileName);
                 string url = GetStreamUrl(StreamType.Series, episode.EpisodeId, episode.ContainerExtension);
 
                 logger.LogDebug("Exporting series STRM file {Path}", path);
-                await WriteStrmFileAsync(path, url, cancellationToken).ConfigureAwait(false);
+                await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
             }
         }
     }
