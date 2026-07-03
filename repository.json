@@ -8,12 +8,36 @@
     "owner": "pietermn",
     "versions": [
       {
-        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, and add optional STRM export for selected movies and series.",
-        "checksum": "f30caddb2369df4b78985b5e7caa9f72",
-        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.4/jellyfin-xtream_0.8.4.0.zip",
+        "changelog": "",
+        "checksum": "e7f041f1fc483a9f149dbb513f894a86",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.5/jelly-xtream_0.8.4.0.zip",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-06-12T17:54:36Z",
+        "timestamp": "2026-07-03T14:44:58Z",
         "version": "0.8.4.0"
+      },
+      {
+        "changelog": "Adds optional STRM export for selected movies and series alongside existing channel functionality.",
+        "checksum": "",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.4/jellyfin-xtream_0.8.4.0.zip",
+        "targetAbi": "10.11.11.0",
+        "timestamp": "2026-06-12T17:16:36Z",
+        "version": "0.8.4.0"
+      },
+      {
+        "changelog": "Adds configurable regex cleanup rules for Live TV, movie, series, season, episode, and category names.",
+        "checksum": "",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.3/jellyfin-xtream_0.8.3.0.zip",
+        "targetAbi": "10.11.11.0",
+        "timestamp": "2026-06-12T17:08:39Z",
+        "version": "0.8.3.0"
+      },
+      {
+        "changelog": "Custom build with improved live restream buffering, safer live buffer synchronization, configured User-Agent on stream requests, and Jellyfin 10.11.11 dependency updates.",
+        "checksum": "",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.2/jellyfin-xtream_0.8.2.0.zip",
+        "targetAbi": "10.11.11.0",
+        "timestamp": "2026-06-12T16:56:05Z",
+        "version": "0.8.2.0"
       }
     ]
   }
