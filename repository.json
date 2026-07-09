@@ -8,6 +8,14 @@
     "owner": "pietermn",
     "versions": [
       {
+        "changelog": "Handle Xtream provider HTTP errors cleanly and deduplicate STRM exports by stable stream, series, and episode IDs.",
+        "checksum": "35d85f8130f6ae47815009136339f20d",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.11/jelly-xtream_0.8.11.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-09T06:15:44Z",
+        "version": "0.8.11.0"
+      },
+      {
         "changelog": "Retry transient Xtream API request failures such as connection resets during STRM export.",
         "checksum": "b61fd1b7449a1da78ab9828dacef1988",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.10/jelly-xtream_0.8.10.0.zip",
