@@ -15,6 +15,8 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
+using System.Net.Http;
 using System.Net.Mime;
 using System.Threading;
 using System.Threading.Tasks;
@@ -23,7 +25,6 @@ using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Api;
 
@@ -35,6 +36,8 @@ namespace Jellyfin.Xtream.Api;
 [Produces(MediaTypeNames.Application.Json)]
 public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
 {
+    private const string ProviderRequestFailedMessage = "The Xtream provider rejected the request.";
+
     private static CategoryResponse CreateCategoryResponse(Category category) =>
         new()
         {
@@ -69,6 +72,18 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
             Number = stream.Num,
         };
 
+    private ObjectResult CreateProviderErrorResponse(HttpRequestException ex)
+    {
+        HttpStatusCode statusCode = ex.StatusCode ?? HttpStatusCode.BadGateway;
+        return StatusCode(
+            (int)statusCode,
+            new
+            {
+                Error = ProviderRequestFailedMessage,
+                StatusCode = (int)statusCode,
+            });
+    }
+
     /// <summary>
     /// Test the configured provider.
     /// </summary>
@@ -78,18 +93,25 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("TestProvider")]
     public async Task<ActionResult<ProviderTestResponse>> TestProvider(CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        PlayerApi info = await xtreamClient.GetUserAndServerInfoAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
-        return Ok(new ProviderTestResponse()
+        try
         {
-            ActiveConnections = info.UserInfo.ActiveCons,
-            ExpiryDate = info.UserInfo.ExpDate,
-            MaxConnections = info.UserInfo.MaxConnections,
-            ServerTime = info.ServerInfo.TimeNow,
-            ServerTimezone = info.ServerInfo.Timezone,
-            Status = info.UserInfo.Status,
-            SupportsMpegTs = info.UserInfo.AllowedOutputFormats.Contains("ts"),
-        });
+            Plugin plugin = Plugin.Instance;
+            PlayerApi info = await xtreamClient.GetUserAndServerInfoAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
+            return Ok(new ProviderTestResponse()
+            {
+                ActiveConnections = info.UserInfo.ActiveCons,
+                ExpiryDate = info.UserInfo.ExpDate,
+                MaxConnections = info.UserInfo.MaxConnections,
+                ServerTime = info.ServerInfo.TimeNow,
+                ServerTimezone = info.ServerInfo.Timezone,
+                Status = info.UserInfo.Status,
+                SupportsMpegTs = info.UserInfo.AllowedOutputFormats.Contains("ts"),
+            });
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -101,9 +123,16 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("LiveCategories")]
     public async Task<ActionResult<IEnumerable<CategoryResponse>>> GetLiveCategories(CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<Category> categories = await xtreamClient.GetLiveCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
-        return Ok(categories.Select(CreateCategoryResponse));
+        try
+        {
+            Plugin plugin = Plugin.Instance;
+            List<Category> categories = await xtreamClient.GetLiveCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
+            return Ok(categories.Select(CreateCategoryResponse));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -116,12 +145,19 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("LiveCategories/{categoryId}")]
     public async Task<ActionResult<IEnumerable<StreamInfo>>> GetLiveStreams(int categoryId, CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<StreamInfo> streams = await xtreamClient.GetLiveStreamsByCategoryAsync(
-          plugin.Creds,
-          categoryId,
-          cancellationToken).ConfigureAwait(false);
-        return Ok(streams.Select(CreateItemResponse));
+        try
+        {
+            Plugin plugin = Plugin.Instance;
+            List<StreamInfo> streams = await xtreamClient.GetLiveStreamsByCategoryAsync(
+              plugin.Creds,
+              categoryId,
+              cancellationToken).ConfigureAwait(false);
+            return Ok(streams.Select(CreateItemResponse));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -133,9 +169,16 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("VodCategories")]
     public async Task<ActionResult<IEnumerable<CategoryResponse>>> GetVodCategories(CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<Category> categories = await xtreamClient.GetVodCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
-        return Ok(categories.Select(CreateCategoryResponse));
+        try
+        {
+            Plugin plugin = Plugin.Instance;
+            List<Category> categories = await xtreamClient.GetVodCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
+            return Ok(categories.Select(CreateCategoryResponse));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -148,12 +191,19 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("VodCategories/{categoryId}")]
     public async Task<ActionResult<IEnumerable<StreamInfo>>> GetVodStreams(int categoryId, CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<StreamInfo> streams = await xtreamClient.GetVodStreamsByCategoryAsync(
-          plugin.Creds,
-          categoryId,
-          cancellationToken).ConfigureAwait(false);
-        return Ok(streams.Select(CreateItemResponse));
+        try
+        {
+            Plugin plugin = Plugin.Instance;
+            List<StreamInfo> streams = await xtreamClient.GetVodStreamsByCategoryAsync(
+              plugin.Creds,
+              categoryId,
+              cancellationToken).ConfigureAwait(false);
+            return Ok(streams.Select(CreateItemResponse));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -165,9 +215,16 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("SeriesCategories")]
     public async Task<ActionResult<IEnumerable<CategoryResponse>>> GetSeriesCategories(CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<Category> categories = await xtreamClient.GetSeriesCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
-        return Ok(categories.Select(CreateCategoryResponse));
+        try
+        {
+            Plugin plugin = Plugin.Instance;
+            List<Category> categories = await xtreamClient.GetSeriesCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
+            return Ok(categories.Select(CreateCategoryResponse));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -180,12 +237,19 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("SeriesCategories/{categoryId}")]
     public async Task<ActionResult<IEnumerable<StreamInfo>>> GetSeriesStreams(int categoryId, CancellationToken cancellationToken)
     {
-        Plugin plugin = Plugin.Instance;
-        List<Series> series = await xtreamClient.GetSeriesByCategoryAsync(
-          plugin.Creds,
-          categoryId,
-          cancellationToken).ConfigureAwait(false);
-        return Ok(series.Select(CreateItemResponse));
+        try
+        {
+            Plugin plugin = Plugin.Instance;
+            List<Series> series = await xtreamClient.GetSeriesByCategoryAsync(
+              plugin.Creds,
+              categoryId,
+              cancellationToken).ConfigureAwait(false);
+            return Ok(series.Select(CreateItemResponse));
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 
     /// <summary>
@@ -197,8 +261,15 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     [HttpGet("LiveTv")]
     public async Task<ActionResult<IEnumerable<StreamInfo>>> GetLiveTvChannels(CancellationToken cancellationToken)
     {
-        IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
-        var channels = streams.Select(CreateChannelResponse).ToList();
-        return Ok(channels);
+        try
+        {
+            IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false);
+            var channels = streams.Select(CreateChannelResponse).ToList();
+            return Ok(channels);
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        {
+            return CreateProviderErrorResponse(ex);
+        }
     }
 }

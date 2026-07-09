@@ -272,7 +272,10 @@ public partial class StreamService(IXtreamClient xtreamClient)
         }
 
         List<StreamInfo> streams = await xtreamClient.GetVodStreamsByCategoryAsync(Plugin.Instance.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        return streams.Where((StreamInfo stream) => IsConfigured(Plugin.Instance.Configuration.Vod, categoryId, stream.StreamId));
+        return streams
+            .Where((StreamInfo stream) => IsConfigured(Plugin.Instance.Configuration.Vod, categoryId, stream.StreamId))
+            .GroupBy(stream => stream.StreamId)
+            .Select(group => group.First());
     }
 
     /// <summary>
@@ -300,7 +303,10 @@ public partial class StreamService(IXtreamClient xtreamClient)
         }
 
         List<Series> series = await xtreamClient.GetSeriesByCategoryAsync(Plugin.Instance.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        return series.Where((Series series) => IsConfigured(Plugin.Instance.Configuration.Series, series.CategoryId, series.SeriesId));
+        return series
+            .Where((Series series) => IsConfigured(Plugin.Instance.Configuration.Series, series.CategoryId, series.SeriesId))
+            .GroupBy(series => series.SeriesId)
+            .Select(group => group.First());
     }
 
     /// <summary>
@@ -332,7 +338,9 @@ public partial class StreamService(IXtreamClient xtreamClient)
     {
         SeriesStreamInfo series = await GetSeriesStreamsBySeriesAsync(seriesId, cancellationToken).ConfigureAwait(false);
         Season? season = series.Seasons.FirstOrDefault(s => s.SeasonNumber == seasonId || s.SeasonId == seasonId);
-        return series.Episodes[seasonId].Select((Episode episode) => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, episode));
+        return series.Episodes[seasonId]
+            .GroupBy(episode => episode.EpisodeId)
+            .Select(group => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, group.First()));
     }
 
     /// <summary>

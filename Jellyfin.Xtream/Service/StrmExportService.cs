@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client.Models;
@@ -124,6 +125,11 @@ public class StrmExportService(ILogger<StrmExportService> logger)
 
     private static void DeleteStaleStrmFiles(string rootPath, HashSet<string> expectedPaths)
     {
+        if (!Directory.Exists(rootPath))
+        {
+            return;
+        }
+
         foreach (string path in Directory.EnumerateFiles(rootPath, "*.strm", SearchOption.AllDirectories))
         {
             if (!expectedPaths.Contains(Path.GetFullPath(path)))
@@ -155,11 +161,25 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
-            streamsToExport.AddRange(streams.Where(stream => IsConfigured(config.Vod, categoryConfig.Key, stream.StreamId)));
+            try
+            {
+                IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
+                streamsToExport.AddRange(streams.Where(stream => IsConfigured(config.Vod, categoryConfig.Key, stream.StreamId)));
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+            {
+                hasFailures = true;
+                logger.LogWarning(ex, "Skipping VOD STRM export for category {CategoryId} because the Xtream provider returned HTTP {StatusCode}.", categoryConfig.Key, (int)ex.StatusCode.Value);
+            }
+
             categoriesProcessed++;
             progress(categoryCount == 0 ? 10 : categoriesProcessed * 10.0 / categoryCount);
         }
+
+        streamsToExport = streamsToExport
+            .GroupBy(stream => stream.StreamId)
+            .Select(group => group.First())
+            .ToList();
 
         int streamsProcessed = 0;
         foreach (StreamInfo stream in streamsToExport)
@@ -212,11 +232,25 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            IEnumerable<Series> seriesItems = await Plugin.Instance.StreamService.GetSeries(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
-            seriesToExport.AddRange(seriesItems.Where(series => IsConfigured(config.Series, categoryConfig.Key, series.SeriesId)));
+            try
+            {
+                IEnumerable<Series> seriesItems = await Plugin.Instance.StreamService.GetSeries(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
+                seriesToExport.AddRange(seriesItems.Where(series => IsConfigured(config.Series, categoryConfig.Key, series.SeriesId)));
+            }
+            catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+            {
+                hasFailures = true;
+                logger.LogWarning(ex, "Skipping series STRM export for category {CategoryId} because the Xtream provider returned HTTP {StatusCode}.", categoryConfig.Key, (int)ex.StatusCode.Value);
+            }
+
             categoriesProcessed++;
             progress(categoryCount == 0 ? 10 : categoriesProcessed * 10.0 / categoryCount);
         }
+
+        seriesToExport = seriesToExport
+            .GroupBy(series => series.SeriesId)
+            .Select(group => group.First())
+            .ToList();
 
         int seriesProcessed = 0;
         foreach (Series series in seriesToExport)
@@ -261,29 +295,42 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         PluginConfiguration config = Plugin.Instance.Configuration;
         ParsedName seriesName = StreamService.ParseName(series.Name);
         string safeSeriesName = SafePathPart(seriesName.Title);
+        string seriesPath = Path.Combine(config.SeriesStrmExportPath, safeSeriesName);
+        HashSet<string> seriesExpectedPaths = new(StringComparer.Ordinal);
         SeriesStreamInfo seriesInfo = await Plugin.Instance.StreamService.GetSeriesStreamsBySeriesAsync(series.SeriesId, cancellationToken).ConfigureAwait(false);
-        int totalEpisodes = seriesInfo.Episodes.Values.Sum(episodes => episodes.Count);
+        List<KeyValuePair<int, Episode>> episodesToExport = seriesInfo.Episodes
+            .SelectMany(season => season.Value.Select(episode => new KeyValuePair<int, Episode>(season.Key, episode)))
+            .GroupBy(episodeEntry => episodeEntry.Value.EpisodeId)
+            .Select(group => group
+                .OrderBy(episodeEntry => episodeEntry.Key)
+                .ThenBy(episodeEntry => episodeEntry.Value.EpisodeNum)
+                .First())
+            .OrderBy(episodeEntry => episodeEntry.Key)
+            .ThenBy(episodeEntry => episodeEntry.Value.EpisodeNum)
+            .ToList();
+        int totalEpisodes = episodesToExport.Count;
         int episodesProcessed = 0;
 
-        foreach (KeyValuePair<int, ICollection<Episode>> season in seriesInfo.Episodes.OrderBy(season => season.Key))
+        foreach (KeyValuePair<int, Episode> episodeEntry in episodesToExport)
         {
-            string seasonFolder = $"Season {season.Key.ToString("00", CultureInfo.InvariantCulture)}";
-            foreach (Episode episode in season.Value.OrderBy(episode => episode.EpisodeNum))
-            {
-                ParsedName episodeName = StreamService.ParseName(episode.Title);
-                string safeEpisodeName = SafePathPart(episodeName.Title, MaxEpisodeTitleLength);
-                string episodeNumber = episode.EpisodeNum.ToString("00", CultureInfo.InvariantCulture);
-                string fileName = BuildFileName($"S{season.Key.ToString("00", CultureInfo.InvariantCulture)}E{episodeNumber} - {safeEpisodeName} [{episode.EpisodeId}]", "strm");
-                string path = Path.Combine(config.SeriesStrmExportPath, safeSeriesName, seasonFolder, fileName);
-                string url = GetStreamUrl(StreamType.Series, episode.EpisodeId, episode.ContainerExtension);
+            int seasonId = episodeEntry.Key;
+            Episode episode = episodeEntry.Value;
+            string seasonFolder = $"Season {seasonId.ToString("00", CultureInfo.InvariantCulture)}";
+            ParsedName episodeName = StreamService.ParseName(episode.Title);
+            string safeEpisodeName = SafePathPart(episodeName.Title, MaxEpisodeTitleLength);
+            string episodeNumber = episode.EpisodeNum.ToString("00", CultureInfo.InvariantCulture);
+            string fileName = BuildFileName($"S{seasonId.ToString("00", CultureInfo.InvariantCulture)}E{episodeNumber} - {safeEpisodeName} [{episode.EpisodeId}]", "strm");
+            string path = Path.Combine(seriesPath, seasonFolder, fileName);
+            string url = GetStreamUrl(StreamType.Series, episode.EpisodeId, episode.ContainerExtension);
 
-                logger.LogDebug("Exporting series STRM file {Path}", path);
-                await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
-                episodesProcessed++;
-                progress(totalEpisodes == 0 ? 100 : episodesProcessed * 100.0 / totalEpisodes);
-            }
+            logger.LogDebug("Exporting series STRM file {Path}", path);
+            await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
+            seriesExpectedPaths.Add(Path.GetFullPath(path));
+            episodesProcessed++;
+            progress(totalEpisodes == 0 ? 100 : episodesProcessed * 100.0 / totalEpisodes);
         }
 
+        DeleteStaleStrmFiles(seriesPath, seriesExpectedPaths);
         progress(100);
     }
 }

@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -119,15 +120,24 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
             {
                 return await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException ex) when (attempt < MaxQueryAttempts)
+            catch (HttpRequestException ex) when (attempt < MaxQueryAttempts && IsTransient(ex.StatusCode))
             {
                 logger.LogWarning(ex, "Xtream API request failed on attempt {Attempt} of {MaxAttempts}; retrying.", attempt, MaxQueryAttempts);
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), cancellationToken).ConfigureAwait(false);
             }
-
-            await Task.Delay(TimeSpan.FromSeconds(attempt * 2), cancellationToken).ConfigureAwait(false);
         }
 
         return await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static bool IsTransient(HttpStatusCode? statusCode)
+    {
+        if (!statusCode.HasValue)
+        {
+            return true;
+        }
+
+        return statusCode.Value is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests || (int)statusCode.Value >= 500;
     }
 
     public Task<PlayerApi> GetUserAndServerInfoAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
