@@ -13,6 +13,8 @@ export default function (view) {
     getConfig.then((config) => visible.checked = config.IsSeriesVisible);
     const strmExportEnabled = view.querySelector("#StrmExportEnabled");
     getConfig.then((config) => strmExportEnabled.checked = config.IsSeriesStrmExportEnabled);
+    const strmExportDeduplicationEnabled = view.querySelector("#StrmExportDeduplicationEnabled");
+    getConfig.then((config) => strmExportDeduplicationEnabled.checked = config.IsSeriesStrmExportDeduplicationEnabled ?? true);
     const strmExportPath = view.querySelector("#StrmExportPath");
     getConfig.then((config) => strmExportPath.value = config.SeriesStrmExportPath || '');
     const table = view.querySelector('#SeriesContent');
@@ -28,6 +30,7 @@ export default function (view) {
         ApiClient.getPluginConfiguration(pluginId).then((config) => {
           config.IsSeriesVisible = visible.checked;
           config.IsSeriesStrmExportEnabled = strmExportEnabled.checked;
+          config.IsSeriesStrmExportDeduplicationEnabled = strmExportDeduplicationEnabled.checked;
           config.SeriesStrmExportPath = strmExportPath.value;
           config.Series = data;
           ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {

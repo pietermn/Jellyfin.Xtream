@@ -15,6 +15,15 @@
             <span>Export selected series as STRM files</span>
           </label>
         </div>
+        <div class="checkboxContainer checkboxContainer-withDescription">
+          <label>
+            <input is="emby-checkbox" id="StrmExportDeduplicationEnabled" name="StrmExportDeduplicationEnabled" type="checkbox" />
+            <span>Skip duplicate cleaned series titles during STRM export</span>
+          </label>
+          <div class="fieldDescription">
+            When multiple selected series clean to the same title, export one preferred series and remove stale duplicate STRM files on the next successful export.
+          </div>
+        </div>
         <div class="inputContainer">
           <label class="inputLabel inputLabelUnfocused" for="StrmExportPath">Series STRM export folder</label>
           <input id="StrmExportPath" name="StrmExportPath" type="text" is="emby-input" />

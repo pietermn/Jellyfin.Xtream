@@ -75,6 +75,11 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool IsVodStrmExportEnabled { get; set; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether duplicate VOD STRM exports are skipped by cleaned title.
+    /// </summary>
+    public bool IsVodStrmExportDeduplicationEnabled { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the folder where VOD STRM files are exported.
     /// </summary>
     public string VodStrmExportPath { get; set; } = string.Empty;
@@ -83,6 +88,11 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Gets or sets a value indicating whether STRM export is enabled for series.
     /// </summary>
     public bool IsSeriesStrmExportEnabled { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether duplicate series STRM exports are skipped by cleaned title.
+    /// </summary>
+    public bool IsSeriesStrmExportDeduplicationEnabled { get; set; } = true;
 
     /// <summary>
     /// Gets or sets the folder where series STRM files are exported.

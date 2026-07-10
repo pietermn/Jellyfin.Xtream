@@ -37,6 +37,20 @@ public class StrmExportService(ILogger<StrmExportService> logger)
     private const int MaxEpisodeTitleLength = 72;
     private const int MaxFileNameLength = 180;
     private static readonly char[] _invalidFileNameChars = Path.GetInvalidFileNameChars();
+    private static readonly char[] _prefixTokenSeparators = ['-', ' '];
+    private static readonly Dictionary<string, int> _providerPriority = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["NF"] = 0,
+        ["D+"] = 1,
+        ["AMZ"] = 2,
+        ["A+"] = 3,
+        ["MAX"] = 4,
+        ["P+"] = 5,
+        ["SKY"] = 6,
+        ["PCOK"] = 7,
+        ["TOP"] = 8,
+        ["VP"] = 9,
+    };
 
     /// <summary>
     /// Exports configured STRM files.
@@ -110,6 +124,76 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         return $"{SafePathPart(name, maxNameLength)}{safeExtension}";
     }
 
+    private static DuplicatePriority GetDuplicatePriority(string name)
+    {
+        int separator = name.IndexOf(" - ", StringComparison.Ordinal);
+        if (separator <= 0)
+        {
+            return new DuplicatePriority(1, 1, int.MaxValue, name);
+        }
+
+        string[] tokens = name[..separator].Split(_prefixTokenSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        bool is4K = tokens.Any(token => string.Equals(token, "4K", StringComparison.OrdinalIgnoreCase));
+        bool isNl = tokens.Any(token => string.Equals(token, "NL", StringComparison.OrdinalIgnoreCase));
+        bool isEn = tokens.Any(token => string.Equals(token, "EN", StringComparison.OrdinalIgnoreCase));
+        string? provider = tokens.FirstOrDefault(token =>
+            !string.Equals(token, "4K", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(token, "NL", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(token, "EN", StringComparison.OrdinalIgnoreCase));
+
+        int providerRank = provider != null && _providerPriority.TryGetValue(provider, out int rank) ? rank : int.MaxValue;
+        int languageRank = isNl ? 0 : isEn ? 2 : 1;
+        return new DuplicatePriority(is4K ? 0 : 1, languageRank, providerRank, name);
+    }
+
+    private List<T> DeduplicateByCleanTitle<T>(IEnumerable<T> items, Func<T, string> getName, Func<T, int> getId, string itemType)
+    {
+        int skipped = 0;
+        List<T> result = items
+            .Select(item => new
+            {
+                Item = item,
+                Id = getId(item),
+                Name = getName(item),
+                CleanTitle = SafePathPart(StreamService.ParseName(getName(item)).Title),
+                Priority = GetDuplicatePriority(getName(item)),
+            })
+            .GroupBy(item => item.CleanTitle, StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var selected = group
+                    .OrderBy(item => item.Priority.QualityRank)
+                    .ThenBy(item => item.Priority.LanguageRank)
+                    .ThenBy(item => item.Priority.ProviderRank)
+                    .ThenBy(item => item.Priority.Name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(item => item.Id)
+                    .First();
+
+                int duplicates = group.Count() - 1;
+                if (duplicates > 0)
+                {
+                    skipped += duplicates;
+                    logger.LogInformation(
+                        "Skipping {Count} duplicate {ItemType} STRM export(s) for cleaned title '{Title}'; selected '{Name}' ({Id}).",
+                        duplicates,
+                        itemType,
+                        group.Key,
+                        selected.Name,
+                        selected.Id);
+                }
+
+                return selected.Item;
+            })
+            .ToList();
+
+        if (skipped > 0)
+        {
+            logger.LogInformation("Skipped {Count} duplicate {ItemType} STRM export(s) by cleaned title.", skipped, itemType);
+        }
+
+        return result;
+    }
+
     private static async Task WriteStrmFileAsync(string path, string url, HashSet<string> expectedPaths, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path) ?? throw new ArgumentException("Invalid STRM path", nameof(path)));
@@ -181,6 +265,11 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             .Select(group => group.First())
             .ToList();
 
+        if (config.IsVodStrmExportDeduplicationEnabled)
+        {
+            streamsToExport = DeduplicateByCleanTitle(streamsToExport, stream => stream.Name, stream => stream.StreamId, "VOD");
+        }
+
         int streamsProcessed = 0;
         foreach (StreamInfo stream in streamsToExport)
         {
@@ -251,6 +340,11 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             .GroupBy(series => series.SeriesId)
             .Select(group => group.First())
             .ToList();
+
+        if (config.IsSeriesStrmExportDeduplicationEnabled)
+        {
+            seriesToExport = DeduplicateByCleanTitle(seriesToExport, series => series.Name, series => series.SeriesId, "series");
+        }
 
         int seriesProcessed = 0;
         foreach (Series series in seriesToExport)
@@ -333,4 +427,6 @@ public class StrmExportService(ILogger<StrmExportService> logger)
         DeleteStaleStrmFiles(seriesPath, seriesExpectedPaths);
         progress(100);
     }
+
+    private readonly record struct DuplicatePriority(int QualityRank, int LanguageRank, int ProviderRank, string Name);
 }

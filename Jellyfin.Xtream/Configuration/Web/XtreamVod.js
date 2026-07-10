@@ -15,6 +15,8 @@ export default function (view) {
     getConfig.then((config) => tmdbOverride.checked = config.IsTmdbVodOverride);
     const strmExportEnabled = view.querySelector("#StrmExportEnabled");
     getConfig.then((config) => strmExportEnabled.checked = config.IsVodStrmExportEnabled);
+    const strmExportDeduplicationEnabled = view.querySelector("#StrmExportDeduplicationEnabled");
+    getConfig.then((config) => strmExportDeduplicationEnabled.checked = config.IsVodStrmExportDeduplicationEnabled ?? true);
     const strmExportPath = view.querySelector("#StrmExportPath");
     getConfig.then((config) => strmExportPath.value = config.VodStrmExportPath || '');
     const table = view.querySelector('#VodContent');
@@ -31,6 +33,7 @@ export default function (view) {
           config.IsVodVisible = visible.checked;
           config.IsTmdbVodOverride = tmdbOverride.checked;
           config.IsVodStrmExportEnabled = strmExportEnabled.checked;
+          config.IsVodStrmExportDeduplicationEnabled = strmExportDeduplicationEnabled.checked;
           config.VodStrmExportPath = strmExportPath.value;
           config.Vod = data;
           ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {

@@ -8,10 +8,10 @@ fi
 
 owner="$1"
 repo="$2"
-version="${3:-0.8.4.0}"
+version="${3:-0.8.12.0}"
 tag="v${version%".0"}"
-zip_name="jellyfin-xtream_${version}.zip"
-dist_zip="dist/Jellyfin.Xtream_${version}.zip"
+zip_name="jelly-xtream_${version}.zip"
+dist_zip="dist/${zip_name}"
 output="dist/repository.json"
 
 if [ ! -f "$dist_zip" ]; then
@@ -39,7 +39,7 @@ cat > "$output" <<JSON
     "owner": "${owner}",
     "versions": [
       {
-        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, and add optional STRM export for selected movies and series.",
+        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, add optional STRM export for selected movies and series, and skip duplicate cleaned STRM export titles.",
         "checksum": "${checksum}",
         "sourceUrl": "${source_url}",
         "targetAbi": "10.11.0.0",
@@ -51,7 +51,9 @@ cat > "$output" <<JSON
 ]
 JSON
 
-cp "$dist_zip" "dist/${zip_name}"
+if [ "$dist_zip" != "dist/${zip_name}" ]; then
+  cp "$dist_zip" "dist/${zip_name}"
+fi
 
 echo "Generated $output"
 echo "Release asset: dist/${zip_name}"
