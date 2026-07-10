@@ -36,7 +36,11 @@ namespace Jellyfin.Xtream;
 /// </summary>
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
-public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtreamClient) : IChannel, IDisableMediaSourceDisplay
+/// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+public class CatchupChannel(
+    ILogger<CatchupChannel> logger,
+    IXtreamClient xtreamClient,
+    NameNormalizationService nameNormalizer) : IChannel, IDisableMediaSourceDisplay
 {
     private readonly ILogger<CatchupChannel> _logger = logger;
 
@@ -116,7 +120,8 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
     {
         Plugin plugin = Plugin.Instance;
         List<ChannelItemInfo> items = [];
-        foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreamsWithOverrides(cancellationToken).ConfigureAwait(false))
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
+        foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false))
         {
             if (!channel.TvArchive)
             {
@@ -124,7 +129,7 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
                 continue;
             }
 
-            ParsedName parsedName = StreamService.ParseName(channel.Name);
+            ParsedName parsedName = plugin.StreamService.ApplyLiveStreamOverrides(channel, names);
             items.Add(new ChannelItemInfo()
             {
                 Id = StreamService.ToGuid(StreamService.CatchupPrefix, channel.CategoryId ?? 0, channel.StreamId, 0).ToString(),
@@ -150,7 +155,8 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
         List<StreamInfo> streams = await xtreamClient.GetLiveStreamsByCategoryAsync(plugin.Creds, categoryId, cancellationToken).ConfigureAwait(false);
         StreamInfo channel = streams.FirstOrDefault(s => s.StreamId == channelId)
             ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
-        ParsedName parsedName = StreamService.ParseName(channel.Name);
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
+        ParsedName parsedName = plugin.StreamService.ApplyLiveStreamOverrides(channel, names);
 
         List<ChannelItemInfo> items = [];
         for (int i = 0; i <= channel.TvArchiveDuration; i++)
@@ -186,6 +192,7 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
             ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
         EpgListings epgs = await xtreamClient.GetEpgInfoAsync(plugin.Creds, channelId, cancellationToken).ConfigureAwait(false);
         List<ChannelItemInfo> items = [];
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
 
         // Create fallback single-stream catch-up if no EPG is available.
         if (epgs.Listings.Count == 0)
@@ -215,7 +222,10 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
 
         foreach (EpgInfo epg in epgs.Listings.Where(epg => epg.Start <= end && epg.End >= start))
         {
-            ParsedName parsedName = StreamService.ParseName(epg.Title);
+            ParsedName parsedName = names.Normalize(epg.Title, NameScope.LiveProgram);
+            string programTitle = string.IsNullOrWhiteSpace(parsedName.Title)
+                ? "Untitled program"
+                : parsedName.Title;
             int durationMinutes = (int)Math.Ceiling((epg.End - epg.Start).TotalMinutes);
             string dateTitle = epg.Start.ToLocalTime().ToString("HH:mm", CultureInfo.InvariantCulture);
             List<MediaSourceInfo> sources = [
@@ -230,7 +240,7 @@ public class CatchupChannel(ILogger<CatchupChannel> logger, IXtreamClient xtream
                 IsLiveStream = false,
                 MediaSources = sources,
                 MediaType = ChannelMediaType.Video,
-                Name = $"{dateTitle} - {parsedName.Title}",
+                Name = $"{dateTitle} - {programTitle}",
                 Overview = epg.Description,
                 PremiereDate = epg.Start,
                 RunTimeTicks = durationMinutes * TimeSpan.TicksPerMinute,

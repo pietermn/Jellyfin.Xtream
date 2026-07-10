@@ -21,15 +21,6 @@
             <span>Export selected movies as STRM files</span>
           </label>
         </div>
-        <div class="checkboxContainer checkboxContainer-withDescription">
-          <label>
-            <input is="emby-checkbox" id="StrmExportDeduplicationEnabled" name="StrmExportDeduplicationEnabled" type="checkbox" />
-            <span>Skip duplicate cleaned movie titles during STRM export</span>
-          </label>
-          <div class="fieldDescription">
-            When multiple selected movies clean to the same title, export one preferred stream and remove stale duplicate STRM files on the next successful export.
-          </div>
-        </div>
         <div class="inputContainer">
           <label class="inputLabel inputLabelUnfocused" for="StrmExportPath">Movie STRM export folder</label>
           <input id="StrmExportPath" name="StrmExportPath" type="text" is="emby-input" />

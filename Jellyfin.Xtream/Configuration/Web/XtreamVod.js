@@ -15,25 +15,22 @@ export default function (view) {
     getConfig.then((config) => tmdbOverride.checked = config.IsTmdbVodOverride);
     const strmExportEnabled = view.querySelector("#StrmExportEnabled");
     getConfig.then((config) => strmExportEnabled.checked = config.IsVodStrmExportEnabled);
-    const strmExportDeduplicationEnabled = view.querySelector("#StrmExportDeduplicationEnabled");
-    getConfig.then((config) => strmExportDeduplicationEnabled.checked = config.IsVodStrmExportDeduplicationEnabled ?? true);
     const strmExportPath = view.querySelector("#StrmExportPath");
     getConfig.then((config) => strmExportPath.value = config.VodStrmExportPath || '');
     const table = view.querySelector('#VodContent');
     Xtream.populateCategoriesTable(
       table,
       () => getConfig.then((config) => config.Vod),
-      () => Xtream.fetchJson('Xtream/VodCategories'),
-      (categoryId) => Xtream.fetchJson(`Xtream/VodCategories/${categoryId}`),
+      () => Xtream.fetchJson('Plugins/JellyfinXtream/v1/VodCategories'),
+      (categoryId) => Xtream.fetchJson(`Plugins/JellyfinXtream/v1/VodCategories/${categoryId}`),
     ).then((data) => {
-      view.querySelector('#XtreamVodForm').addEventListener('submit', (e) => {
+      view.querySelector('#XtreamVodForm').onsubmit = (e) => {
         Dashboard.showLoadingMsg();
 
         ApiClient.getPluginConfiguration(pluginId).then((config) => {
           config.IsVodVisible = visible.checked;
           config.IsTmdbVodOverride = tmdbOverride.checked;
           config.IsVodStrmExportEnabled = strmExportEnabled.checked;
-          config.IsVodStrmExportDeduplicationEnabled = strmExportDeduplicationEnabled.checked;
           config.VodStrmExportPath = strmExportPath.value;
           config.Vod = data;
           ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
@@ -43,7 +40,7 @@ export default function (view) {
 
         e.preventDefault();
         return false;
-      });
+      };
     }).catch((error) => {
       console.error('Failed to load VOD categories:', error);
       Dashboard.hideLoadingMsg();

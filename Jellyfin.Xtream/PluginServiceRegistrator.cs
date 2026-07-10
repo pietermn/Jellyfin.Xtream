@@ -33,7 +33,13 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
     /// <inheritdoc />
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
-        serviceCollection.AddSingleton<IXtreamClient, XtreamClient>();
+        serviceCollection.AddSingleton<XtreamClient>();
+        serviceCollection.AddSingleton<IXtreamClient>(serviceProvider =>
+            new CachingXtreamClient(serviceProvider.GetRequiredService<XtreamClient>()));
+        serviceCollection.AddSingleton<NameNormalizationService>();
+        serviceCollection.AddSingleton<StreamProxyUrlBuilder>();
+        serviceCollection.AddSingleton<StreamService>();
+        serviceCollection.AddSingleton<TaskService>();
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
         serviceCollection.AddSingleton<IChannel, CatchupChannel>();
         serviceCollection.AddSingleton<IChannel, SeriesChannel>();

@@ -16,7 +16,6 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Reflection;
 using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
@@ -24,7 +23,6 @@ using MediaBrowser.Common.Configuration;
 using MediaBrowser.Common.Plugins;
 using MediaBrowser.Model.Plugins;
 using MediaBrowser.Model.Serialization;
-using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream;
@@ -41,20 +39,27 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// </summary>
     /// <param name="applicationPaths">Instance of the <see cref="IApplicationPaths"/> interface.</param>
     /// <param name="xmlSerializer">Instance of the <see cref="IXmlSerializer"/> interface.</param>
-    /// <param name="taskManager">Instance of the <see cref="ITaskManager"/> interface.</param>
-    /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
-    public Plugin(IApplicationPaths applicationPaths, IXmlSerializer xmlSerializer, ITaskManager taskManager, IXtreamClient xtreamClient)
+    /// <param name="taskService">Instance of the <see cref="TaskService"/> class.</param>
+    /// <param name="xtreamClient">Instance of the <see cref="XtreamClient"/> class.</param>
+    /// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+    /// <param name="streamService">Instance of the <see cref="StreamService"/> class.</param>
+    public Plugin(
+        IApplicationPaths applicationPaths,
+        IXmlSerializer xmlSerializer,
+        TaskService taskService,
+        XtreamClient xtreamClient,
+        NameNormalizationService nameNormalizer,
+        StreamService streamService)
         : base(applicationPaths, xmlSerializer)
     {
         _instance = this;
         XtreamClient = xtreamClient;
-        if (XtreamClient is XtreamClient client)
-        {
-            client.UpdateUserAgent();
-        }
+        XtreamClient.UpdateUserAgent();
 
-        StreamService = new(xtreamClient);
-        TaskService = new(taskManager);
+        NameNormalizer = nameNormalizer;
+        _ = NameNormalizer.UpdateRules(Configuration.NameCleanupRules);
+        StreamService = streamService;
+        TaskService = taskService;
     }
 
     /// <inheritdoc />
@@ -71,7 +76,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <summary>
     /// Gets the data version used to trigger a cache invalidation on plugin update or config change.
     /// </summary>
-    public string DataVersion => Assembly.GetCallingAssembly().GetName().Version?.ToString() + Configuration.GetHashCode();
+    public string DataVersion => string.Create(
+        CultureInfo.InvariantCulture,
+        $"{typeof(Plugin).Assembly.GetName().Version}:{NameNormalizer.CreateSnapshot().Version}");
 
     /// <summary>
     /// Gets the current plugin instance.
@@ -79,11 +86,16 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public static Plugin Instance => _instance ?? throw new InvalidOperationException("Plugin instance not available");
 
     /// <summary>
+    /// Gets the shared name-normalization service.
+    /// </summary>
+    public NameNormalizationService NameNormalizer { get; }
+
+    /// <summary>
     /// Gets the stream service instance.
     /// </summary>
     public StreamService StreamService { get; init; }
 
-    private IXtreamClient XtreamClient { get; init; }
+    private XtreamClient XtreamClient { get; init; }
 
     /// <summary>
     /// Gets the task service instance.
@@ -124,11 +136,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
         base.UpdateConfiguration(configuration);
+        _ = NameNormalizer.UpdateRules(Configuration.NameCleanupRules);
 
-        if (XtreamClient is XtreamClient client)
-        {
-            client.UpdateUserAgent();
-        }
+        XtreamClient.UpdateUserAgent();
 
         // Force a refresh of TV guide on configuration update.
         // - This will update the TV channels.
@@ -143,5 +153,14 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         TaskService.CancelIfRunningAndQueue(
             "Jellyfin.LiveTv",
             "Jellyfin.LiveTv.Channels.RefreshChannelsScheduledTask");
+
+        if (Configuration.IsVodStrmExportEnabled || Configuration.IsSeriesStrmExportEnabled)
+        {
+            // Proxy signatures are bound to the current provider credentials, and name or
+            // selection changes also affect paths. Regenerate exports after a config update.
+            TaskService.CancelIfRunningAndQueue(
+                "Jellyfin.Xtream",
+                "Jellyfin.Xtream.Tasks.StrmExportScheduledTask");
+        }
     }
 }

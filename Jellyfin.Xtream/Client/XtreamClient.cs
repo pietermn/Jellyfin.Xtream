@@ -15,17 +15,18 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Reflection;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client.Models;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Serialization;
 
 #pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client;
@@ -41,26 +42,18 @@ namespace Jellyfin.Xtream.Client;
 public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDisposable, IXtreamClient
 {
     private const int MaxQueryAttempts = 3;
-
+    private const long MaxApiResponseBytes = 256L * 1024 * 1024;
+    private static readonly string _defaultUserAgent = $"Jellyfin.Xtream/{Assembly.GetExecutingAssembly().GetName().Version}";
     private readonly JsonSerializerSettings _serializerSettings = new()
     {
         Error = NullableEventHandler(logger),
     };
 
+    private string _userAgent = string.Empty;
+
     public void UpdateUserAgent()
     {
-        client.DefaultRequestHeaders.UserAgent.Clear();
-        if (string.IsNullOrWhiteSpace(Plugin.Instance.Configuration.UserAgent))
-        {
-            ProductHeaderValue header = new ProductHeaderValue("Jellyfin.Xtream", Assembly.GetExecutingAssembly().GetName().Version?.ToString());
-            ProductInfoHeaderValue userAgent = new ProductInfoHeaderValue(header);
-            client.DefaultRequestHeaders.UserAgent.Add(userAgent);
-        }
-        else
-        {
-            // Trust the correctness of the configuration.
-            client.DefaultRequestHeaders.Add("User-Agent", Plugin.Instance.Configuration.UserAgent);
-        }
+        Volatile.Write(ref _userAgent, Plugin.Instance.Configuration.UserAgent?.Trim() ?? string.Empty);
     }
 
     /// <summary>
@@ -68,9 +61,9 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
     /// </summary>
     /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
     /// <returns>An event handler using the given logger.</returns>
-    public static EventHandler<ErrorEventArgs> NullableEventHandler(ILogger<XtreamClient> logger)
+    public static EventHandler<Newtonsoft.Json.Serialization.ErrorEventArgs> NullableEventHandler(ILogger<XtreamClient> logger)
     {
-        return (object? sender, ErrorEventArgs args) =>
+        return (object? sender, Newtonsoft.Json.Serialization.ErrorEventArgs args) =>
         {
             if (args.ErrorContext.OriginalObject?.GetType() is Type type && args.ErrorContext.Member is string jsonName)
             {
@@ -97,37 +90,141 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
 
                 if (property != null && Nullable.GetUnderlyingType(property.PropertyType) != null)
                 {
-                    logger.LogDebug("Property `{0}` (`{1}` in JSON) is nullable, ignoring parsing error!", property.Name, jsonName);
-                    logger.LogDebug("Stack trace: {0}", new System.Diagnostics.StackTrace());
+                    logger.LogDebug("Ignoring invalid nullable Xtream property {Property} ({JsonName}).", property.Name, jsonName);
                     args.ErrorContext.Handled = true;
                 }
             }
         };
     }
 
-    private async Task<T> QueryApi<T>(ConnectionInfo connectionInfo, string urlPath, CancellationToken cancellationToken)
+    private async Task<T> QueryApi<T>(
+        ConnectionInfo connectionInfo,
+        string operation,
+        IReadOnlyDictionary<string, string?> parameters,
+        CancellationToken cancellationToken)
     {
-        Uri uri = new Uri(connectionInfo.BaseUrl + urlPath);
-        string jsonContent = await GetStringWithRetryAsync(uri, cancellationToken).ConfigureAwait(false);
-        return JsonConvert.DeserializeObject<T>(jsonContent, _serializerSettings)!;
+        Uri uri = BuildApiUri(connectionInfo, parameters);
+        using HttpResponseMessage response = await SendWithRetryAsync(uri, operation, cancellationToken).ConfigureAwait(false);
+        if (response.Content.Headers.ContentLength is long contentLength && contentLength > MaxApiResponseBytes)
+        {
+            throw new HttpRequestException($"Xtream {operation} response exceeds the configured size limit.", null, HttpStatusCode.RequestEntityTooLarge);
+        }
+
+        Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        await using (responseStream.ConfigureAwait(false))
+        {
+            using SizeLimitedReadStream limitedStream = new(responseStream, MaxApiResponseBytes);
+            using StreamReader streamReader = new(limitedStream, Encoding.UTF8, true, 16 * 1024, leaveOpen: true);
+            using JsonTextReader jsonReader = new(streamReader)
+            {
+                CloseInput = false,
+            };
+            try
+            {
+                JsonSerializer serializer = JsonSerializer.Create(_serializerSettings);
+                T? result = serializer.Deserialize<T>(jsonReader);
+                return result ?? throw new JsonSerializationException("The JSON document did not contain the expected value.");
+            }
+            catch (JsonException ex)
+            {
+                throw new HttpRequestException($"Xtream {operation} returned an invalid response.", ex, HttpStatusCode.BadGateway);
+            }
+            catch (InvalidDataException ex)
+            {
+                throw new HttpRequestException($"Xtream {operation} response exceeds the configured size limit.", ex, HttpStatusCode.RequestEntityTooLarge);
+            }
+        }
     }
 
-    private async Task<string> GetStringWithRetryAsync(Uri uri, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendWithRetryAsync(Uri uri, string operation, CancellationToken cancellationToken)
     {
         for (int attempt = 1; attempt <= MaxQueryAttempts; attempt++)
         {
+            using HttpRequestMessage request = new(HttpMethod.Get, uri);
+            AddUserAgent(request);
             try
             {
-                return await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
+                HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode || attempt == MaxQueryAttempts || !IsTransient(response.StatusCode))
+                {
+                    if (response.IsSuccessStatusCode)
+                    {
+                        return response;
+                    }
+
+                    HttpStatusCode statusCode = response.StatusCode;
+                    response.Dispose();
+                    throw new HttpRequestException($"Xtream {operation} returned HTTP {(int)statusCode}.", null, statusCode);
+                }
+
+                TimeSpan delay = GetRetryDelay(response, attempt);
+                logger.LogWarning(
+                    "Xtream {Operation} returned HTTP {StatusCode} on attempt {Attempt} of {MaxAttempts}; retrying after {DelayMs} ms.",
+                    operation,
+                    (int)response.StatusCode,
+                    attempt,
+                    MaxQueryAttempts,
+                    delay.TotalMilliseconds);
+                response.Dispose();
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
             }
-            catch (HttpRequestException ex) when (attempt < MaxQueryAttempts && IsTransient(ex.StatusCode))
+            catch (HttpRequestException ex)
             {
-                logger.LogWarning(ex, "Xtream API request failed on attempt {Attempt} of {MaxAttempts}; retrying.", attempt, MaxQueryAttempts);
-                await Task.Delay(TimeSpan.FromSeconds(attempt * 2), cancellationToken).ConfigureAwait(false);
+                if (attempt < MaxQueryAttempts && IsTransient(ex.StatusCode))
+                {
+                    TimeSpan delay = GetRetryDelay(null, attempt);
+                    logger.LogWarning(
+                        "Xtream {Operation} request failed on attempt {Attempt} of {MaxAttempts}; retrying after {DelayMs} ms.",
+                        operation,
+                        attempt,
+                        MaxQueryAttempts,
+                        delay.TotalMilliseconds);
+                    await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                    continue;
+                }
+
+                throw new HttpRequestException($"Xtream {operation} request failed.", null, ex.StatusCode);
             }
         }
 
-        return await client.GetStringAsync(uri, cancellationToken).ConfigureAwait(false);
+        throw new InvalidOperationException("The Xtream retry loop completed without a response.");
+    }
+
+    private static Uri BuildApiUri(ConnectionInfo connectionInfo, IReadOnlyDictionary<string, string?> parameters)
+    {
+        if (!Uri.TryCreate(connectionInfo.BaseUrl.TrimEnd('/') + "/player_api.php", UriKind.Absolute, out Uri? endpoint)
+            || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
+        {
+            throw new ArgumentException("The Xtream base URL must be an absolute HTTP or HTTPS URL.", nameof(connectionInfo));
+        }
+
+        Dictionary<string, string?> query = parameters.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
+        query["username"] = connectionInfo.UserName;
+        query["password"] = connectionInfo.Password;
+        return new Uri(QueryHelpers.AddQueryString(endpoint.ToString(), query));
+    }
+
+    private void AddUserAgent(HttpRequestMessage request)
+    {
+        string configured = Volatile.Read(ref _userAgent);
+        request.Headers.TryAddWithoutValidation("User-Agent", string.IsNullOrWhiteSpace(configured) ? _defaultUserAgent : configured);
+    }
+
+    private static TimeSpan GetRetryDelay(HttpResponseMessage? response, int attempt)
+    {
+        TimeSpan? retryAfter = response?.Headers.RetryAfter?.Delta;
+        if (!retryAfter.HasValue && response?.Headers.RetryAfter?.Date is DateTimeOffset retryDate)
+        {
+            retryAfter = retryDate - DateTimeOffset.UtcNow;
+        }
+
+        if (retryAfter.HasValue && retryAfter.Value > TimeSpan.Zero)
+        {
+            return retryAfter.Value > TimeSpan.FromSeconds(30) ? TimeSpan.FromSeconds(30) : retryAfter.Value;
+        }
+
+        double jitterMilliseconds = Random.Shared.Next(100, 501);
+        return TimeSpan.FromSeconds(Math.Pow(2, attempt - 1)) + TimeSpan.FromMilliseconds(jitterMilliseconds);
     }
 
     private static bool IsTransient(HttpStatusCode? statusCode)
@@ -142,69 +239,80 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
 
     public Task<PlayerApi> GetUserAndServerInfoAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
         QueryApi<PlayerApi>(
-          connectionInfo,
-          $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}",
-          cancellationToken);
+            connectionInfo,
+            "provider status",
+            new Dictionary<string, string?>(),
+            cancellationToken);
 
     public Task<List<Series>> GetSeriesByCategoryAsync(ConnectionInfo connectionInfo, int categoryId, CancellationToken cancellationToken) =>
          QueryApi<List<Series>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_series&category_id={categoryId}",
-           cancellationToken);
+            connectionInfo,
+            "series catalog",
+            new Dictionary<string, string?> { ["action"] = "get_series", ["category_id"] = categoryId.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            cancellationToken);
 
     public Task<SeriesStreamInfo> GetSeriesStreamsBySeriesAsync(ConnectionInfo connectionInfo, int seriesId, CancellationToken cancellationToken) =>
          QueryApi<SeriesStreamInfo>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_series_info&series_id={seriesId}",
-           cancellationToken);
+            connectionInfo,
+            "series details",
+            new Dictionary<string, string?> { ["action"] = "get_series_info", ["series_id"] = seriesId.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            cancellationToken);
 
     public Task<List<StreamInfo>> GetVodStreamsByCategoryAsync(ConnectionInfo connectionInfo, int categoryId, CancellationToken cancellationToken) =>
          QueryApi<List<StreamInfo>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_vod_streams&category_id={categoryId}",
-           cancellationToken);
+            connectionInfo,
+            "VOD catalog",
+            new Dictionary<string, string?> { ["action"] = "get_vod_streams", ["category_id"] = categoryId.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            cancellationToken);
 
     public Task<VodStreamInfo> GetVodInfoAsync(ConnectionInfo connectionInfo, int streamId, CancellationToken cancellationToken) =>
          QueryApi<VodStreamInfo>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_vod_info&vod_id={streamId}",
-           cancellationToken);
+            connectionInfo,
+            "VOD details",
+            new Dictionary<string, string?> { ["action"] = "get_vod_info", ["vod_id"] = streamId.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            cancellationToken);
 
     public Task<List<StreamInfo>> GetLiveStreamsAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
          QueryApi<List<StreamInfo>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_live_streams",
-           cancellationToken);
+            connectionInfo,
+            "live stream catalog",
+            new Dictionary<string, string?> { ["action"] = "get_live_streams" },
+            cancellationToken);
 
     public Task<List<StreamInfo>> GetLiveStreamsByCategoryAsync(ConnectionInfo connectionInfo, int categoryId, CancellationToken cancellationToken) =>
          QueryApi<List<StreamInfo>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_live_streams&category_id={categoryId}",
-           cancellationToken);
+            connectionInfo,
+            "live category",
+            new Dictionary<string, string?> { ["action"] = "get_live_streams", ["category_id"] = categoryId.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            cancellationToken);
 
     public Task<List<Category>> GetSeriesCategoryAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
          QueryApi<List<Category>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_series_categories",
-           cancellationToken);
+            connectionInfo,
+            "series categories",
+            new Dictionary<string, string?> { ["action"] = "get_series_categories" },
+            cancellationToken);
 
     public Task<List<Category>> GetVodCategoryAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
          QueryApi<List<Category>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_vod_categories",
-           cancellationToken);
+            connectionInfo,
+            "VOD categories",
+            new Dictionary<string, string?> { ["action"] = "get_vod_categories" },
+            cancellationToken);
 
     public Task<List<Category>> GetLiveCategoryAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken) =>
          QueryApi<List<Category>>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_live_categories",
-           cancellationToken);
+            connectionInfo,
+            "live categories",
+            new Dictionary<string, string?> { ["action"] = "get_live_categories" },
+            cancellationToken);
 
     public Task<EpgListings> GetEpgInfoAsync(ConnectionInfo connectionInfo, int streamId, CancellationToken cancellationToken) =>
          QueryApi<EpgListings>(
-           connectionInfo,
-           $"/player_api.php?username={connectionInfo.UserName}&password={connectionInfo.Password}&action=get_simple_data_table&stream_id={streamId}",
-           cancellationToken);
+            connectionInfo,
+            "EPG",
+            new Dictionary<string, string?> { ["action"] = "get_simple_data_table", ["stream_id"] = streamId.ToString(System.Globalization.CultureInfo.InvariantCulture) },
+            cancellationToken);
 
     /// <summary>
     /// Dispose the HTTP client.

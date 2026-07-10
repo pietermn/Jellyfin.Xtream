@@ -32,7 +32,8 @@ namespace Jellyfin.Xtream.Api;
 /// The Jellyfin Xtream configuration API.
 /// </summary>
 [ApiController]
-[Route("[controller]")]
+[Authorize(Policy = "RequiresElevation")]
+[Route("Plugins/JellyfinXtream/v1")]
 [Produces(MediaTypeNames.Application.Json)]
 public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
 {
@@ -74,13 +75,19 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
 
     private ObjectResult CreateProviderErrorResponse(HttpRequestException ex)
     {
-        HttpStatusCode statusCode = ex.StatusCode ?? HttpStatusCode.BadGateway;
+        HttpStatusCode upstreamStatusCode = ex.StatusCode ?? HttpStatusCode.BadGateway;
+        HttpStatusCode responseStatusCode = upstreamStatusCode switch
+        {
+            HttpStatusCode.TooManyRequests => HttpStatusCode.TooManyRequests,
+            HttpStatusCode.RequestTimeout or HttpStatusCode.GatewayTimeout => HttpStatusCode.GatewayTimeout,
+            _ => HttpStatusCode.BadGateway,
+        };
         return StatusCode(
-            (int)statusCode,
+            (int)responseStatusCode,
             new
             {
                 Error = ProviderRequestFailedMessage,
-                StatusCode = (int)statusCode,
+                UpstreamStatusCode = (int)upstreamStatusCode,
             });
     }
 
@@ -89,7 +96,6 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// </summary>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the categories.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("TestProvider")]
     public async Task<ActionResult<ProviderTestResponse>> TestProvider(CancellationToken cancellationToken)
     {
@@ -108,7 +114,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
                 SupportsMpegTs = info.UserInfo.AllowedOutputFormats.Contains("ts"),
             });
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -119,7 +125,6 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// </summary>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the categories.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("LiveCategories")]
     public async Task<ActionResult<IEnumerable<CategoryResponse>>> GetLiveCategories(CancellationToken cancellationToken)
     {
@@ -129,7 +134,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
             List<Category> categories = await xtreamClient.GetLiveCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
             return Ok(categories.Select(CreateCategoryResponse));
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -141,9 +146,8 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// <param name="categoryId">The category for which to fetch the streams.</param>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the streams.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("LiveCategories/{categoryId}")]
-    public async Task<ActionResult<IEnumerable<StreamInfo>>> GetLiveStreams(int categoryId, CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<ItemResponse>>> GetLiveStreams(int categoryId, CancellationToken cancellationToken)
     {
         try
         {
@@ -154,7 +158,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
               cancellationToken).ConfigureAwait(false);
             return Ok(streams.Select(CreateItemResponse));
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -165,7 +169,6 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// </summary>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the categories.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("VodCategories")]
     public async Task<ActionResult<IEnumerable<CategoryResponse>>> GetVodCategories(CancellationToken cancellationToken)
     {
@@ -175,7 +178,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
             List<Category> categories = await xtreamClient.GetVodCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
             return Ok(categories.Select(CreateCategoryResponse));
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -187,9 +190,8 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// <param name="categoryId">The category for which to fetch the streams.</param>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the streams.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("VodCategories/{categoryId}")]
-    public async Task<ActionResult<IEnumerable<StreamInfo>>> GetVodStreams(int categoryId, CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<ItemResponse>>> GetVodStreams(int categoryId, CancellationToken cancellationToken)
     {
         try
         {
@@ -200,7 +202,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
               cancellationToken).ConfigureAwait(false);
             return Ok(streams.Select(CreateItemResponse));
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -211,7 +213,6 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// </summary>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the categories.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("SeriesCategories")]
     public async Task<ActionResult<IEnumerable<CategoryResponse>>> GetSeriesCategories(CancellationToken cancellationToken)
     {
@@ -221,7 +222,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
             List<Category> categories = await xtreamClient.GetSeriesCategoryAsync(plugin.Creds, cancellationToken).ConfigureAwait(false);
             return Ok(categories.Select(CreateCategoryResponse));
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -233,9 +234,8 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// <param name="categoryId">The category for which to fetch the streams.</param>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the streams.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("SeriesCategories/{categoryId}")]
-    public async Task<ActionResult<IEnumerable<StreamInfo>>> GetSeriesStreams(int categoryId, CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<ItemResponse>>> GetSeriesStreams(int categoryId, CancellationToken cancellationToken)
     {
         try
         {
@@ -246,7 +246,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
               cancellationToken).ConfigureAwait(false);
             return Ok(series.Select(CreateItemResponse));
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }
@@ -257,9 +257,8 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
     /// </summary>
     /// <param name="cancellationToken">The cancellation token for cancelling requests.</param>
     /// <returns>An enumerable containing the streams.</returns>
-    [Authorize(Policy = "RequiresElevation")]
     [HttpGet("LiveTv")]
-    public async Task<ActionResult<IEnumerable<StreamInfo>>> GetLiveTvChannels(CancellationToken cancellationToken)
+    public async Task<ActionResult<IEnumerable<ChannelResponse>>> GetLiveTvChannels(CancellationToken cancellationToken)
     {
         try
         {
@@ -267,7 +266,7 @@ public class XtreamController(IXtreamClient xtreamClient) : ControllerBase
             var channels = streams.Select(CreateChannelResponse).ToList();
             return Ok(channels);
         }
-        catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+        catch (HttpRequestException ex)
         {
             return CreateProviderErrorResponse(ex);
         }

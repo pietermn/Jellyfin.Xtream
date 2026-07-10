@@ -18,9 +18,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Configuration;
 using Microsoft.Extensions.Logging;
@@ -31,26 +31,16 @@ namespace Jellyfin.Xtream.Service;
 /// Exports selected VOD and series streams as STRM files for normal Jellyfin libraries.
 /// </summary>
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
-public class StrmExportService(ILogger<StrmExportService> logger)
+/// <param name="xtreamClient">Xtream API client.</param>
+/// <param name="nameNormalizationService">Name normalization service.</param>
+/// <param name="streamProxyUrlBuilder">Signed Jellyfin stream proxy URL builder.</param>
+public class StrmExportService(
+    ILogger<StrmExportService> logger,
+    IXtreamClient xtreamClient,
+    NameNormalizationService nameNormalizationService,
+    StreamProxyUrlBuilder streamProxyUrlBuilder)
 {
-    private const int MaxDirectoryNameLength = 96;
-    private const int MaxEpisodeTitleLength = 72;
-    private const int MaxFileNameLength = 180;
-    private static readonly char[] _invalidFileNameChars = Path.GetInvalidFileNameChars();
-    private static readonly char[] _prefixTokenSeparators = ['-', ' '];
-    private static readonly Dictionary<string, int> _providerPriority = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["NF"] = 0,
-        ["D+"] = 1,
-        ["AMZ"] = 2,
-        ["A+"] = 3,
-        ["MAX"] = 4,
-        ["P+"] = 5,
-        ["SKY"] = 6,
-        ["PCOK"] = 7,
-        ["TOP"] = 8,
-        ["VP"] = 9,
-    };
+    private static readonly SemaphoreSlim _exportGate = new(1, 1);
 
     /// <summary>
     /// Exports configured STRM files.
@@ -60,215 +50,111 @@ public class StrmExportService(ILogger<StrmExportService> logger)
     /// <returns>Task.</returns>
     public async Task ExportAsync(IProgress<double> progress, CancellationToken cancellationToken)
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        List<Func<Action<double>, CancellationToken, Task>> enabledExports = [];
-
-        if (config.IsVodStrmExportEnabled && !string.IsNullOrWhiteSpace(config.VodStrmExportPath))
+        await _exportGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            enabledExports.Add(ExportVodAsync);
-        }
+            ExportRunSnapshot snapshot = ExportRunSnapshot.Capture(Plugin.Instance.Configuration);
+            NameNormalizationSnapshot namingSnapshot = nameNormalizationService.CreateSnapshot();
+            ValidateRoots(snapshot);
 
-        if (config.IsSeriesStrmExportEnabled && !string.IsNullOrWhiteSpace(config.SeriesStrmExportPath))
-        {
-            enabledExports.Add(ExportSeriesAsync);
-        }
-
-        if (enabledExports.Count == 0)
-        {
-            progress.Report(100);
-            return;
-        }
-
-        progress.Report(0);
-        for (int i = 0; i < enabledExports.Count; i++)
-        {
-            double phaseStart = i * 100.0 / enabledExports.Count;
-            double phaseSize = 100.0 / enabledExports.Count;
-            void ReportPhaseProgress(double phaseProgress)
+            List<Func<Action<double>, CancellationToken, Task>> enabledExports = [];
+            if (snapshot.VodRoot != null)
             {
-                progress.Report(phaseStart + (Math.Clamp(phaseProgress, 0, 100) * phaseSize / 100));
+                enabledExports.Add((report, token) => ExportVodAsync(snapshot, namingSnapshot, report, token));
             }
 
-            ReportPhaseProgress(0);
-            await enabledExports[i](ReportPhaseProgress, cancellationToken).ConfigureAwait(false);
-            ReportPhaseProgress(100);
-        }
-    }
-
-    private static string GetStreamUrl(StreamType type, int id, string? extension)
-    {
-        return Plugin.Instance.StreamService.GetMediaSourceInfo(type, id, extension).Path;
-    }
-
-    private static bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
-    {
-        return config.TryGetValue(category, out HashSet<int>? values) && (values.Count == 0 || values.Contains(id));
-    }
-
-    private static string SafePathPart(string name, int maxLength = MaxDirectoryNameLength)
-    {
-        string result = _invalidFileNameChars.Aggregate(name, (current, c) => current.Replace(c, ' '));
-        result = result.Trim().TrimEnd('.');
-        if (result.Length > maxLength)
-        {
-            result = result[..maxLength].Trim().TrimEnd('.');
-        }
-
-        return string.IsNullOrWhiteSpace(result) ? "Unknown" : result;
-    }
-
-    private static string BuildFileName(string name, string extension)
-    {
-        string safeExtension = extension.Length > 0 && extension[0] == '.' ? extension : $".{extension}";
-        int maxNameLength = MaxFileNameLength - safeExtension.Length;
-        return $"{SafePathPart(name, maxNameLength)}{safeExtension}";
-    }
-
-    private static DuplicatePriority GetDuplicatePriority(string name)
-    {
-        int separator = name.IndexOf(" - ", StringComparison.Ordinal);
-        if (separator <= 0)
-        {
-            return new DuplicatePriority(1, 1, int.MaxValue, name);
-        }
-
-        string[] tokens = name[..separator].Split(_prefixTokenSeparators, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        bool is4K = tokens.Any(token => string.Equals(token, "4K", StringComparison.OrdinalIgnoreCase));
-        bool isNl = tokens.Any(token => string.Equals(token, "NL", StringComparison.OrdinalIgnoreCase));
-        bool isEn = tokens.Any(token => string.Equals(token, "EN", StringComparison.OrdinalIgnoreCase));
-        string? provider = tokens.FirstOrDefault(token =>
-            !string.Equals(token, "4K", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(token, "NL", StringComparison.OrdinalIgnoreCase)
-            && !string.Equals(token, "EN", StringComparison.OrdinalIgnoreCase));
-
-        int providerRank = provider != null && _providerPriority.TryGetValue(provider, out int rank) ? rank : int.MaxValue;
-        int languageRank = isNl ? 0 : isEn ? 2 : 1;
-        return new DuplicatePriority(is4K ? 0 : 1, languageRank, providerRank, name);
-    }
-
-    private List<T> DeduplicateByCleanTitle<T>(IEnumerable<T> items, Func<T, string> getName, Func<T, int> getId, string itemType)
-    {
-        int skipped = 0;
-        List<T> result = items
-            .Select(item => new
+            if (snapshot.SeriesRoot != null)
             {
-                Item = item,
-                Id = getId(item),
-                Name = getName(item),
-                CleanTitle = SafePathPart(StreamService.ParseName(getName(item)).Title),
-                Priority = GetDuplicatePriority(getName(item)),
-            })
-            .GroupBy(item => item.CleanTitle, StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
-            {
-                var selected = group
-                    .OrderBy(item => item.Priority.QualityRank)
-                    .ThenBy(item => item.Priority.LanguageRank)
-                    .ThenBy(item => item.Priority.ProviderRank)
-                    .ThenBy(item => item.Priority.Name, StringComparer.OrdinalIgnoreCase)
-                    .ThenBy(item => item.Id)
-                    .First();
+                enabledExports.Add((report, token) => ExportSeriesAsync(snapshot, namingSnapshot, report, token));
+            }
 
-                int duplicates = group.Count() - 1;
-                if (duplicates > 0)
+            if (enabledExports.Count == 0)
+            {
+                progress.Report(100);
+                return;
+            }
+
+            progress.Report(0);
+            for (int index = 0; index < enabledExports.Count; index++)
+            {
+                double phaseStart = index * 100.0 / enabledExports.Count;
+                double phaseSize = 100.0 / enabledExports.Count;
+                void ReportPhaseProgress(double phaseProgress)
                 {
-                    skipped += duplicates;
-                    logger.LogInformation(
-                        "Skipping {Count} duplicate {ItemType} STRM export(s) for cleaned title '{Title}'; selected '{Name}' ({Id}).",
-                        duplicates,
-                        itemType,
-                        group.Key,
-                        selected.Name,
-                        selected.Id);
+                    progress.Report(phaseStart + (Math.Clamp(phaseProgress, 0, 100) * phaseSize / 100));
                 }
 
-                return selected.Item;
-            })
-            .ToList();
-
-        if (skipped > 0)
-        {
-            logger.LogInformation("Skipped {Count} duplicate {ItemType} STRM export(s) by cleaned title.", skipped, itemType);
-        }
-
-        return result;
-    }
-
-    private static async Task WriteStrmFileAsync(string path, string url, HashSet<string> expectedPaths, CancellationToken cancellationToken)
-    {
-        Directory.CreateDirectory(Path.GetDirectoryName(path) ?? throw new ArgumentException("Invalid STRM path", nameof(path)));
-        string content = url + Environment.NewLine;
-        expectedPaths.Add(Path.GetFullPath(path));
-        if (File.Exists(path) && string.Equals(await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false), content, StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        await File.WriteAllTextAsync(path, content, cancellationToken).ConfigureAwait(false);
-    }
-
-    private static void DeleteStaleStrmFiles(string rootPath, HashSet<string> expectedPaths)
-    {
-        if (!Directory.Exists(rootPath))
-        {
-            return;
-        }
-
-        foreach (string path in Directory.EnumerateFiles(rootPath, "*.strm", SearchOption.AllDirectories))
-        {
-            if (!expectedPaths.Contains(Path.GetFullPath(path)))
-            {
-                File.Delete(path);
+                ReportPhaseProgress(0);
+                await enabledExports[index](ReportPhaseProgress, cancellationToken).ConfigureAwait(false);
+                ReportPhaseProgress(100);
             }
         }
-
-        foreach (string path in Directory.EnumerateDirectories(rootPath, "*", SearchOption.AllDirectories).OrderByDescending(path => path.Length))
+        finally
         {
-            if (!Directory.EnumerateFileSystemEntries(path).Any())
-            {
-                Directory.Delete(path);
-            }
+            _exportGate.Release();
         }
     }
 
-    private async Task ExportVodAsync(Action<double> progress, CancellationToken cancellationToken)
+    private static void ValidateRoots(ExportRunSnapshot snapshot)
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        Directory.CreateDirectory(config.VodStrmExportPath);
-        HashSet<string> expectedPaths = new(StringComparer.Ordinal);
-        bool hasFailures = false;
+        if (snapshot.VodRoot != null
+            && snapshot.SeriesRoot != null
+            && StrmExportPathPolicy.RootsOverlap(snapshot.VodRoot, snapshot.SeriesRoot))
+        {
+            throw new InvalidOperationException("VOD and series STRM export roots must not be equal or nested.");
+        }
+    }
+
+    private async Task ExportVodAsync(
+        ExportRunSnapshot snapshot,
+        NameNormalizationSnapshot namingSnapshot,
+        Action<double> progress,
+        CancellationToken cancellationToken)
+    {
+        string rootPath = snapshot.VodRoot
+            ?? throw new InvalidOperationException("The VOD export root was not captured.");
+        Directory.CreateDirectory(rootPath);
+        StrmExportManifestStore manifestStore = new(rootPath, "vod");
+        StrmExportManifestLoadResult previousManifest = await manifestStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        List<StrmExportManifestEntry> expectedEntries = [];
         List<StreamInfo> streamsToExport = [];
-        int categoryCount = config.Vod.Count;
-        int categoriesProcessed = 0;
+        bool hasFailures = false;
 
-        foreach (KeyValuePair<int, HashSet<int>> categoryConfig in config.Vod)
+        int categoriesProcessed = 0;
+        foreach (CategorySelection selection in snapshot.VodSelections)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
             try
             {
-                IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
-                streamsToExport.AddRange(streams.Where(stream => IsConfigured(config.Vod, categoryConfig.Key, stream.StreamId)));
+                List<StreamInfo> streams = await xtreamClient.GetVodStreamsByCategoryAsync(
+                    snapshot.ConnectionInfo,
+                    selection.CategoryId,
+                    cancellationToken).ConfigureAwait(false);
+                streamsToExport.AddRange(streams.Where(stream => selection.Includes(stream.StreamId)));
             }
-            catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 hasFailures = true;
-                logger.LogWarning(ex, "Skipping VOD STRM export for category {CategoryId} because the Xtream provider returned HTTP {StatusCode}.", categoryConfig.Key, (int)ex.StatusCode.Value);
+                logger.LogWarning(
+                    ex,
+                    "Skipping VOD STRM export for category {CategoryId} because the provider request failed.",
+                    selection.CategoryId);
             }
 
             categoriesProcessed++;
-            progress(categoryCount == 0 ? 10 : categoriesProcessed * 10.0 / categoryCount);
+            progress(snapshot.VodSelections.Count == 0
+                ? 10
+                : categoriesProcessed * 10.0 / snapshot.VodSelections.Count);
         }
 
         streamsToExport = streamsToExport
             .GroupBy(stream => stream.StreamId)
-            .Select(group => group.First())
+            .Select(group => group
+                .OrderBy(stream => stream.Name, StringComparer.Ordinal)
+                .ThenBy(stream => stream.ContainerExtension, StringComparer.Ordinal)
+                .First())
+            .OrderBy(stream => stream.StreamId)
             .ToList();
-
-        if (config.IsVodStrmExportDeduplicationEnabled)
-        {
-            streamsToExport = DeduplicateByCleanTitle(streamsToExport, stream => stream.Name, stream => stream.StreamId, "VOD");
-        }
 
         int streamsProcessed = 0;
         foreach (StreamInfo stream in streamsToExport)
@@ -276,75 +162,99 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                ParsedName parsedName = StreamService.ParseName(stream.Name);
-                string movieName = SafePathPart(parsedName.Title);
-                string containerExtension = string.IsNullOrWhiteSpace(stream.ContainerExtension) ? "strm" : $"{SafePathPart(stream.ContainerExtension, 16)}.strm";
-                string fileName = BuildFileName($"{movieName} [{stream.StreamId}]", containerExtension);
-                string path = Path.Combine(config.VodStrmExportPath, movieName, fileName);
-                string url = GetStreamUrl(StreamType.Vod, stream.StreamId, stream.ContainerExtension);
+                string title = namingSnapshot.Normalize(stream.Name, NameScope.Filesystem).Title;
+                string relativePath = StrmExportPathPolicy.BuildVodRelativePath(
+                    title,
+                    stream.StreamId,
+                    stream.ContainerExtension);
+                string path = StrmExportPathPolicy.ResolveGeneratedPath(rootPath, relativePath);
+                string url = streamProxyUrlBuilder.Build(
+                    snapshot.ConnectionInfo,
+                    StreamType.Vod,
+                    stream.StreamId,
+                    stream.ContainerExtension);
 
-                logger.LogDebug("Exporting VOD STRM file {Path}", path);
-                await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
+                logger.LogDebug("Exporting VOD STRM file for stream {StreamId}.", stream.StreamId);
+                await StrmExportManifestStore.WriteTextAtomicallyAsync(
+                    path,
+                    url + Environment.NewLine,
+                    cancellationToken).ConfigureAwait(false);
+                expectedEntries.Add(new(
+                    $"vod:{stream.StreamId.ToString(CultureInfo.InvariantCulture)}",
+                    relativePath));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 hasFailures = true;
-                logger.LogError(ex, "Failed to export VOD STRM file for stream {StreamId}", stream.StreamId);
+                logger.LogError(ex, "Failed to export VOD STRM file for stream {StreamId}.", stream.StreamId);
             }
 
             streamsProcessed++;
-            progress(10 + (streamsToExport.Count == 0 ? 85 : streamsProcessed * 85.0 / streamsToExport.Count));
-        }
-
-        if (hasFailures)
-        {
-            logger.LogWarning("Skipping stale VOD STRM cleanup because one or more VOD exports failed.");
-            return;
+            progress(10 + (streamsToExport.Count == 0
+                ? 85
+                : streamsProcessed * 85.0 / streamsToExport.Count));
         }
 
         progress(95);
-        DeleteStaleStrmFiles(config.VodStrmExportPath, expectedPaths);
+        await ReconcileIfSafeAsync(
+            "VOD",
+            manifestStore,
+            previousManifest,
+            expectedEntries,
+            hasFailures,
+            hasSuspiciousEmptyResult: snapshot.VodSelections.Count > 0 && expectedEntries.Count == 0,
+            cancellationToken).ConfigureAwait(false);
         progress(100);
     }
 
-    private async Task ExportSeriesAsync(Action<double> progress, CancellationToken cancellationToken)
+    private async Task ExportSeriesAsync(
+        ExportRunSnapshot snapshot,
+        NameNormalizationSnapshot namingSnapshot,
+        Action<double> progress,
+        CancellationToken cancellationToken)
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        Directory.CreateDirectory(config.SeriesStrmExportPath);
-        HashSet<string> expectedPaths = new(StringComparer.Ordinal);
-        bool hasFailures = false;
+        string rootPath = snapshot.SeriesRoot
+            ?? throw new InvalidOperationException("The series export root was not captured.");
+        Directory.CreateDirectory(rootPath);
+        StrmExportManifestStore manifestStore = new(rootPath, "series");
+        StrmExportManifestLoadResult previousManifest = await manifestStore.LoadAsync(cancellationToken).ConfigureAwait(false);
+        List<StrmExportManifestEntry> expectedEntries = [];
         List<Series> seriesToExport = [];
-        int categoryCount = config.Series.Count;
-        int categoriesProcessed = 0;
+        bool hasFailures = false;
+        bool hasSuspiciousEmptySeries = false;
 
-        foreach (KeyValuePair<int, HashSet<int>> categoryConfig in config.Series)
+        int categoriesProcessed = 0;
+        foreach (CategorySelection selection in snapshot.SeriesSelections)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
             try
             {
-                IEnumerable<Series> seriesItems = await Plugin.Instance.StreamService.GetSeries(categoryConfig.Key, cancellationToken).ConfigureAwait(false);
-                seriesToExport.AddRange(seriesItems.Where(series => IsConfigured(config.Series, categoryConfig.Key, series.SeriesId)));
+                List<Series> seriesItems = await xtreamClient.GetSeriesByCategoryAsync(
+                    snapshot.ConnectionInfo,
+                    selection.CategoryId,
+                    cancellationToken).ConfigureAwait(false);
+                seriesToExport.AddRange(seriesItems.Where(series => selection.Includes(series.SeriesId)));
             }
-            catch (HttpRequestException ex) when (ex.StatusCode.HasValue)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 hasFailures = true;
-                logger.LogWarning(ex, "Skipping series STRM export for category {CategoryId} because the Xtream provider returned HTTP {StatusCode}.", categoryConfig.Key, (int)ex.StatusCode.Value);
+                logger.LogWarning(
+                    ex,
+                    "Skipping series STRM export for category {CategoryId} because the provider request failed.",
+                    selection.CategoryId);
             }
 
             categoriesProcessed++;
-            progress(categoryCount == 0 ? 10 : categoriesProcessed * 10.0 / categoryCount);
+            progress(snapshot.SeriesSelections.Count == 0
+                ? 10
+                : categoriesProcessed * 10.0 / snapshot.SeriesSelections.Count);
         }
 
         seriesToExport = seriesToExport
             .GroupBy(series => series.SeriesId)
-            .Select(group => group.First())
+            .Select(group => group.OrderBy(series => series.Name, StringComparer.Ordinal).First())
+            .OrderBy(series => series.SeriesId)
             .ToList();
-
-        if (config.IsSeriesStrmExportDeduplicationEnabled)
-        {
-            seriesToExport = DeduplicateByCleanTitle(seriesToExport, series => series.Name, series => series.SeriesId, "series");
-        }
 
         int seriesProcessed = 0;
         foreach (Series series in seriesToExport)
@@ -352,16 +262,22 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                await ExportSeriesItemAsync(
+                int episodeCount = await ExportSeriesItemAsync(
+                    snapshot,
+                    namingSnapshot,
+                    rootPath,
                     series,
-                    expectedPaths,
-                    (seriesProgress) => progress(10 + ((seriesProcessed + (Math.Clamp(seriesProgress, 0, 100) / 100)) * 85.0 / seriesToExport.Count)),
+                    expectedEntries,
+                    seriesProgress => progress(
+                        10 + ((seriesProcessed + (Math.Clamp(seriesProgress, 0, 100) / 100))
+                              * 85.0 / seriesToExport.Count)),
                     cancellationToken).ConfigureAwait(false);
+                hasSuspiciousEmptySeries |= episodeCount == 0;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 hasFailures = true;
-                logger.LogError(ex, "Failed to export series STRM files for series {SeriesId}", series.SeriesId);
+                logger.LogError(ex, "Failed to export series STRM files for series {SeriesId}.", series.SeriesId);
             }
             finally
             {
@@ -373,60 +289,212 @@ public class StrmExportService(ILogger<StrmExportService> logger)
             }
         }
 
+        progress(95);
+        await ReconcileIfSafeAsync(
+            "series",
+            manifestStore,
+            previousManifest,
+            expectedEntries,
+            hasFailures,
+            hasSuspiciousEmptySeries || (snapshot.SeriesSelections.Count > 0 && expectedEntries.Count == 0),
+            cancellationToken).ConfigureAwait(false);
+        progress(100);
+    }
+
+    private async Task<int> ExportSeriesItemAsync(
+        ExportRunSnapshot snapshot,
+        NameNormalizationSnapshot namingSnapshot,
+        string rootPath,
+        Series series,
+        List<StrmExportManifestEntry> expectedEntries,
+        Action<double> progress,
+        CancellationToken cancellationToken)
+    {
+        string seriesTitle = namingSnapshot.Normalize(series.Name, NameScope.Filesystem).Title;
+        SeriesStreamInfo seriesInfo = await xtreamClient.GetSeriesStreamsBySeriesAsync(
+            snapshot.ConnectionInfo,
+            series.SeriesId,
+            cancellationToken).ConfigureAwait(false);
+        List<EpisodeExport> episodesToExport = seriesInfo.Episodes
+            .SelectMany(season => season.Value.Select(episode => new EpisodeExport(season.Key, episode)))
+            .GroupBy(episode => episode.Episode.EpisodeId)
+            .Select(group => group
+                .OrderBy(episode => episode.SeasonNumber)
+                .ThenBy(episode => episode.Episode.EpisodeNum)
+                .ThenBy(episode => episode.Episode.Title, StringComparer.Ordinal)
+                .First())
+            .OrderBy(episode => episode.SeasonNumber)
+            .ThenBy(episode => episode.Episode.EpisodeNum)
+            .ThenBy(episode => episode.Episode.EpisodeId)
+            .ToList();
+
+        int episodesProcessed = 0;
+        foreach (EpisodeExport episodeExport in episodesToExport)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Episode episode = episodeExport.Episode;
+            string episodeTitle = namingSnapshot.Normalize(episode.Title, NameScope.Filesystem).Title;
+            string relativePath = StrmExportPathPolicy.BuildEpisodeRelativePath(
+                seriesTitle,
+                series.SeriesId,
+                episodeExport.SeasonNumber,
+                episode.EpisodeNum,
+                episodeTitle,
+                episode.EpisodeId);
+            string path = StrmExportPathPolicy.ResolveGeneratedPath(rootPath, relativePath);
+            string url = streamProxyUrlBuilder.Build(
+                snapshot.ConnectionInfo,
+                StreamType.Series,
+                episode.EpisodeId,
+                episode.ContainerExtension);
+
+            logger.LogDebug(
+                "Exporting series STRM file for series {SeriesId}, episode {EpisodeId}.",
+                series.SeriesId,
+                episode.EpisodeId);
+            await StrmExportManifestStore.WriteTextAtomicallyAsync(
+                path,
+                url + Environment.NewLine,
+                cancellationToken).ConfigureAwait(false);
+            expectedEntries.Add(new(
+                $"series:{series.SeriesId.ToString(CultureInfo.InvariantCulture)}:episode:{episode.EpisodeId.ToString(CultureInfo.InvariantCulture)}",
+                relativePath));
+
+            episodesProcessed++;
+            progress(episodesToExport.Count == 0
+                ? 100
+                : episodesProcessed * 100.0 / episodesToExport.Count);
+        }
+
+        progress(100);
+        return episodesToExport.Count;
+    }
+
+    private async Task ReconcileIfSafeAsync(
+        string exportKind,
+        StrmExportManifestStore manifestStore,
+        StrmExportManifestLoadResult previousManifest,
+        List<StrmExportManifestEntry> expectedEntries,
+        bool hasFailures,
+        bool hasSuspiciousEmptyResult,
+        CancellationToken cancellationToken)
+    {
         if (hasFailures)
         {
-            logger.LogWarning("Skipping stale series STRM cleanup because one or more series exports failed.");
+            logger.LogWarning(
+                "Skipping stale {ExportKind} STRM reconciliation because one or more exports failed.",
+                exportKind);
             return;
         }
 
-        progress(95);
-        DeleteStaleStrmFiles(config.SeriesStrmExportPath, expectedPaths);
-        progress(100);
-    }
-
-    private async Task ExportSeriesItemAsync(Series series, HashSet<string> expectedPaths, Action<double> progress, CancellationToken cancellationToken)
-    {
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        ParsedName seriesName = StreamService.ParseName(series.Name);
-        string safeSeriesName = SafePathPart(seriesName.Title);
-        string seriesPath = Path.Combine(config.SeriesStrmExportPath, safeSeriesName);
-        HashSet<string> seriesExpectedPaths = new(StringComparer.Ordinal);
-        SeriesStreamInfo seriesInfo = await Plugin.Instance.StreamService.GetSeriesStreamsBySeriesAsync(series.SeriesId, cancellationToken).ConfigureAwait(false);
-        List<KeyValuePair<int, Episode>> episodesToExport = seriesInfo.Episodes
-            .SelectMany(season => season.Value.Select(episode => new KeyValuePair<int, Episode>(season.Key, episode)))
-            .GroupBy(episodeEntry => episodeEntry.Value.EpisodeId)
-            .Select(group => group
-                .OrderBy(episodeEntry => episodeEntry.Key)
-                .ThenBy(episodeEntry => episodeEntry.Value.EpisodeNum)
-                .First())
-            .OrderBy(episodeEntry => episodeEntry.Key)
-            .ThenBy(episodeEntry => episodeEntry.Value.EpisodeNum)
-            .ToList();
-        int totalEpisodes = episodesToExport.Count;
-        int episodesProcessed = 0;
-
-        foreach (KeyValuePair<int, Episode> episodeEntry in episodesToExport)
+        if (hasSuspiciousEmptyResult)
         {
-            int seasonId = episodeEntry.Key;
-            Episode episode = episodeEntry.Value;
-            string seasonFolder = $"Season {seasonId.ToString("00", CultureInfo.InvariantCulture)}";
-            ParsedName episodeName = StreamService.ParseName(episode.Title);
-            string safeEpisodeName = SafePathPart(episodeName.Title, MaxEpisodeTitleLength);
-            string episodeNumber = episode.EpisodeNum.ToString("00", CultureInfo.InvariantCulture);
-            string fileName = BuildFileName($"S{seasonId.ToString("00", CultureInfo.InvariantCulture)}E{episodeNumber} - {safeEpisodeName} [{episode.EpisodeId}]", "strm");
-            string path = Path.Combine(seriesPath, seasonFolder, fileName);
-            string url = GetStreamUrl(StreamType.Series, episode.EpisodeId, episode.ContainerExtension);
-
-            logger.LogDebug("Exporting series STRM file {Path}", path);
-            await WriteStrmFileAsync(path, url, expectedPaths, cancellationToken).ConfigureAwait(false);
-            seriesExpectedPaths.Add(Path.GetFullPath(path));
-            episodesProcessed++;
-            progress(totalEpisodes == 0 ? 100 : episodesProcessed * 100.0 / totalEpisodes);
+            logger.LogWarning(
+                "Skipping stale {ExportKind} STRM reconciliation because the export result was unexpectedly empty.",
+                exportKind);
+            return;
         }
 
-        DeleteStaleStrmFiles(seriesPath, seriesExpectedPaths);
-        progress(100);
+        if (previousManifest.State == StrmExportManifestState.Invalid)
+        {
+            logger.LogWarning(
+                "Skipping stale {ExportKind} STRM reconciliation because the ownership manifest is invalid: {Reason}",
+                exportKind,
+                previousManifest.Error);
+            return;
+        }
+
+        int deleted = await manifestStore.ReconcileAndCommitAsync(
+            previousManifest,
+            expectedEntries,
+            cancellationToken).ConfigureAwait(false);
+        logger.LogInformation(
+            "Reconciled {Count} {ExportKind} STRM entries and removed {DeletedCount} stale managed files.",
+            expectedEntries.Count,
+            exportKind,
+            deleted);
     }
 
-    private readonly record struct DuplicatePriority(int QualityRank, int LanguageRank, int ProviderRank, string Name);
+    private sealed record CategorySelection(int CategoryId, HashSet<int> ItemIds)
+    {
+        public bool Includes(int itemId)
+        {
+            return ItemIds.Count == 0 || ItemIds.Contains(itemId);
+        }
+    }
+
+    private sealed record EpisodeExport(int SeasonNumber, Episode Episode);
+
+    private sealed class ExportRunSnapshot
+    {
+        private ExportRunSnapshot(
+            ConnectionInfo connectionInfo,
+            string? vodRoot,
+            string? seriesRoot,
+            IReadOnlyList<CategorySelection> vodSelections,
+            IReadOnlyList<CategorySelection> seriesSelections)
+        {
+            ConnectionInfo = connectionInfo;
+            VodRoot = vodRoot;
+            SeriesRoot = seriesRoot;
+            VodSelections = vodSelections;
+            SeriesSelections = seriesSelections;
+        }
+
+        public ConnectionInfo ConnectionInfo { get; }
+
+        public string? VodRoot { get; }
+
+        public string? SeriesRoot { get; }
+
+        public IReadOnlyList<CategorySelection> VodSelections { get; }
+
+        public IReadOnlyList<CategorySelection> SeriesSelections { get; }
+
+        public static ExportRunSnapshot Capture(PluginConfiguration configuration)
+        {
+            string? vodRoot = configuration.IsVodStrmExportEnabled
+                              && !string.IsNullOrWhiteSpace(configuration.VodStrmExportPath)
+                ? StrmExportPathPolicy.NormalizeRoot(configuration.VodStrmExportPath)
+                : null;
+            string? seriesRoot = configuration.IsSeriesStrmExportEnabled
+                                 && !string.IsNullOrWhiteSpace(configuration.SeriesStrmExportPath)
+                ? StrmExportPathPolicy.NormalizeRoot(configuration.SeriesStrmExportPath)
+                : null;
+            string baseUrl = vodRoot != null || seriesRoot != null
+                ? NormalizeBaseUrl(configuration.BaseUrl)
+                : "https://example.invalid";
+            string username = configuration.Username;
+            string password = configuration.Password;
+
+            return new(
+                new ConnectionInfo(baseUrl, username, password),
+                vodRoot,
+                seriesRoot,
+                CaptureSelections(configuration.Vod),
+                CaptureSelections(configuration.Series));
+        }
+
+        private static List<CategorySelection> CaptureSelections(
+            SerializableDictionary<int, HashSet<int>> selections)
+        {
+            return selections
+                .OrderBy(selection => selection.Key)
+                .Select(selection => new CategorySelection(selection.Key, new HashSet<int>(selection.Value)))
+                .ToList();
+        }
+
+        private static string NormalizeBaseUrl(string baseUrl)
+        {
+            if (!Uri.TryCreate(baseUrl?.Trim(), UriKind.Absolute, out Uri? uri)
+                || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+                || !string.IsNullOrEmpty(uri.Query)
+                || !string.IsNullOrEmpty(uri.Fragment))
+            {
+                throw new InvalidOperationException("The Xtream base URL must be an absolute HTTP(S) URL without a query or fragment.");
+            }
+
+            return uri.GetLeftPart(UriPartial.Path).TrimEnd('/');
+        }
+    }
 }

@@ -15,10 +15,10 @@ export default function (view) {
     Xtream.populateCategoriesTable(
       table,
       () => getConfig.then((config) => config.LiveTv),
-      () => Xtream.fetchJson('Xtream/LiveCategories'),
-      (categoryId) => Xtream.fetchJson(`Xtream/LiveCategories/${categoryId}`),
+      () => Xtream.fetchJson('Plugins/JellyfinXtream/v1/LiveCategories'),
+      (categoryId) => Xtream.fetchJson(`Plugins/JellyfinXtream/v1/LiveCategories/${categoryId}`),
     ).then((data) => {
-      view.querySelector('#XtreamLiveForm').addEventListener('submit', (e) => {
+      view.querySelector('#XtreamLiveForm').onsubmit = (e) => {
         Dashboard.showLoadingMsg();
 
         ApiClient.getPluginConfiguration(pluginId).then((config) => {
@@ -31,7 +31,7 @@ export default function (view) {
 
         e.preventDefault();
         return false;
-      });
+      };
     }).catch((error) => {
       console.error('Failed to load Live TV categories:', error);
       Dashboard.hideLoadingMsg();

@@ -16,6 +16,7 @@
 using System;
 using System.Linq;
 using MediaBrowser.Model.Tasks;
+using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Xtream.Service;
 
@@ -23,7 +24,8 @@ namespace Jellyfin.Xtream.Service;
 /// A service for dealing with stream information.
 /// </summary>
 /// <param name="taskManager">Instance of the <see cref="ITaskManager"/> interface.</param>
-public class TaskService(ITaskManager taskManager)
+/// <param name="logger">Instance of the <see cref="ILogger{TCategoryName}"/> interface.</param>
+public sealed class TaskService(ITaskManager taskManager, ILogger<TaskService> logger)
 {
     private static Type? FindType(string assembly, string fullName)
     {
@@ -31,8 +33,8 @@ public class TaskService(ITaskManager taskManager)
             .Where(a =>
                 !a.IsDynamic &&
                 (a.FullName?.StartsWith($"{assembly},", StringComparison.InvariantCulture) ?? false))
-            .SelectMany(a => a.GetTypes())
-            .FirstOrDefault(t => t?.FullName == fullName);
+            .Select(a => a.GetType(fullName, throwOnError: false, ignoreCase: false))
+            .FirstOrDefault(t => t is not null);
     }
 
     /// <summary>
@@ -40,15 +42,37 @@ public class TaskService(ITaskManager taskManager)
     /// </summary>
     /// <param name="assembly">The name of the assembly to search in for the type.</param>
     /// <param name="fullName">The full name of the task type.</param>
-    /// <exception cref="ArgumentException">If the task type is not found.</exception>
     public void CancelIfRunningAndQueue(string assembly, string fullName)
     {
-        Type refreshType = FindType(assembly, fullName) ?? throw new ArgumentException("Refresh task not found");
+        try
+        {
+            Type? refreshType = FindType(assembly, fullName);
+            if (refreshType is null)
+            {
+                logger.LogWarning(
+                    "Scheduled task {TaskType} from assembly {AssemblyName} was not found; refresh was not queued.",
+                    fullName,
+                    assembly);
+                return;
+            }
 
-        // As the type is not publicly visible, use reflection.
-        typeof(ITaskManager)
-            .GetMethod(nameof(ITaskManager.CancelIfRunningAndQueue), 1, [])?
-            .MakeGenericMethod(refreshType)?
-            .Invoke(taskManager, []);
+            // As some Jellyfin task types are not publicly visible, invoke the generic API by reflection.
+            var queueMethod = typeof(ITaskManager)
+                .GetMethod(nameof(ITaskManager.CancelIfRunningAndQueue), 1, []);
+            if (queueMethod is null)
+            {
+                logger.LogWarning("The Jellyfin task queue API was not found; refresh was not queued.");
+                return;
+            }
+
+            queueMethod.MakeGenericMethod(refreshType).Invoke(taskManager, []);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(
+                ex,
+                "Could not queue scheduled task {TaskType}; the configuration change was still saved.",
+                fullName);
+        }
     }
 }

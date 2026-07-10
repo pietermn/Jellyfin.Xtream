@@ -14,8 +14,14 @@ on:
   workflow_dispatch:
 
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./scripts/validate-release-metadata.sh
   call:
-    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@master
+    needs: metadata
+    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@91aa56610cd3321f8897bbe2657c1743b3df3436
     with:
       dotnet-version: "9.0.*"
       dotnet-target: "net9.0"

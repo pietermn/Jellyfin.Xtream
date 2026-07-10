@@ -33,24 +33,27 @@ public class Base64Converter : JsonConverter
     /// <inheritdoc />
     public override object ReadJson(JsonReader reader, Type objectType, object? existingValue, JsonSerializer serializer)
     {
-        if (reader.Value == null)
+        if (reader.Value is not string value || string.IsNullOrEmpty(value))
         {
-            throw new ArgumentException("Value cannot be null.");
+            return string.Empty;
         }
 
-        byte[] bytes = Convert.FromBase64String((string)reader.Value);
-        return Encoding.UTF8.GetString(bytes);
+        try
+        {
+            byte[] bytes = Convert.FromBase64String(value);
+            return Encoding.UTF8.GetString(bytes);
+        }
+        catch (FormatException)
+        {
+            // Some Xtream implementations return plain text despite documenting base64.
+            return value;
+        }
     }
 
     /// <inheritdoc />
     public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer)
     {
-        if (value == null)
-        {
-            throw new ArgumentException("Value cannot be null.");
-        }
-
-        byte[] bytes = Encoding.UTF8.GetBytes((string)value);
+        byte[] bytes = Encoding.UTF8.GetBytes(value as string ?? string.Empty);
         writer.WriteValue(Convert.ToBase64String(bytes));
     }
 }

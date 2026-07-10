@@ -37,7 +37,12 @@ namespace Jellyfin.Xtream.Providers;
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 /// <param name="providerManager">Instance of the <see cref="IProviderManager"/> interface.</param>
 /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
-public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager providerManager, IXtreamClient xtreamClient) : ICustomMetadataProvider<Movie>, IPreRefreshProvider
+/// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+public class XtreamVodProvider(
+    ILogger<VodChannel> logger,
+    IProviderManager providerManager,
+    IXtreamClient xtreamClient,
+    NameNormalizationService nameNormalizer) : ICustomMetadataProvider<Movie>, IPreRefreshProvider
 {
     /// <summary>
     /// The name of the provider.
@@ -83,11 +88,12 @@ public class XtreamVodProvider(ILogger<VodChannel> logger, IProviderManager prov
                 else if (Plugin.Instance.Configuration.IsTmdbVodOverride)
                 {
                     // Try to fetch the TMDB id to get proper metadata.
+                    ParsedName parsedName = nameNormalizer.Normalize(vod.MovieData?.Name, NameScope.Vod);
                     RemoteSearchQuery<MovieInfo> query = new()
                     {
                         SearchInfo = new()
                         {
-                            Name = StreamService.ParseName(vod.MovieData?.Name ?? string.Empty).Title,
+                            Name = parsedName.Title,
                             Year = item.PremiereDate?.Year,
                         },
                         SearchProviderName = "TheMovieDb",

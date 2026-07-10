@@ -35,7 +35,10 @@ namespace Jellyfin.Xtream;
 /// The Xtream Codes API channel.
 /// </summary>
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
-public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSourceDisplay
+/// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+public class VodChannel(
+    ILogger<VodChannel> logger,
+    NameNormalizationService nameNormalizer) : IChannel, IDisableMediaSourceDisplay
 {
     /// <inheritdoc />
     public string? Name => "Xtream Video On-Demand";
@@ -114,10 +117,10 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
         }
     }
 
-    private Task<ChannelItemInfo> CreateChannelItemInfo(StreamInfo stream)
+    private Task<ChannelItemInfo> CreateChannelItemInfo(StreamInfo stream, NameNormalizationSnapshot names)
     {
         long added = long.Parse(stream.Added, CultureInfo.InvariantCulture);
-        ParsedName parsedName = StreamService.ParseName(stream.Name);
+        ParsedName parsedName = names.Normalize(stream.Name, NameScope.Vod);
 
         List<MediaSourceInfo> sources =
         [
@@ -148,8 +151,9 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
     private async Task<ChannelItemResult> GetCategories(CancellationToken cancellationToken)
     {
         IEnumerable<Category> categories = await Plugin.Instance.StreamService.GetVodCategories(cancellationToken).ConfigureAwait(false);
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         List<ChannelItemInfo> items = new List<ChannelItemInfo>(
-            categories.Select((Category category) => StreamService.CreateChannelItemInfo(StreamService.VodCategoryPrefix, category)));
+            categories.Select((Category category) => StreamService.CreateChannelItemInfo(StreamService.VodCategoryPrefix, category, names)));
         return new()
         {
             Items = items,
@@ -160,7 +164,8 @@ public class VodChannel(ILogger<VodChannel> logger) : IChannel, IDisableMediaSou
     private async Task<ChannelItemResult> GetStreams(int categoryId, CancellationToken cancellationToken)
     {
         IEnumerable<StreamInfo> streams = await Plugin.Instance.StreamService.GetVodStreams(categoryId, cancellationToken).ConfigureAwait(false);
-        List<ChannelItemInfo> items = [.. await Task.WhenAll(streams.Select(CreateChannelItemInfo)).ConfigureAwait(false)];
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
+        List<ChannelItemInfo> items = [.. await Task.WhenAll(streams.Select(stream => CreateChannelItemInfo(stream, names))).ConfigureAwait(false)];
         ChannelItemResult result = new ChannelItemResult()
         {
             Items = items,

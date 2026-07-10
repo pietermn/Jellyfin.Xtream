@@ -17,7 +17,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
@@ -34,7 +33,12 @@ namespace Jellyfin.Xtream.Service;
 /// A service for dealing with stream information.
 /// </summary>
 /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
-public partial class StreamService(IXtreamClient xtreamClient)
+/// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+/// <param name="proxyUrlBuilder">Instance of the <see cref="StreamProxyUrlBuilder"/> class.</param>
+public class StreamService(
+    IXtreamClient xtreamClient,
+    NameNormalizationService nameNormalizer,
+    StreamProxyUrlBuilder proxyUrlBuilder)
 {
     /// <summary>
     /// The id prefix for VOD category channel items.
@@ -91,102 +95,15 @@ public partial class StreamService(IXtreamClient xtreamClient)
     /// </summary>
     public const int EpgPrefix = 0x5d774c3f;
 
-    private static readonly Regex _tagRegex = TagRegex();
-
     /// <summary>
-    /// Parses tags in the name of a stream entry.
-    /// The name commonly contains tags of the forms:
-    /// <list>
-    /// <item>[TAG]</item>
-    /// <item>|TAG|</item>
-    /// <item>| TAG | (with spaces, e.g., | NL |)</item>
-    /// </list>
-    /// Supports Unicode pipe variants (│, ┃, ｜) in addition to ASCII pipe.
-    /// These tags are parsed and returned as separate strings.
-    /// The returned title is cleaned from tags and trimmed.
+    /// Normalizes a name for legacy filesystem callers.
+    /// New display code should inject <see cref="NameNormalizationService"/> and select an explicit scope.
     /// </summary>
     /// <param name="name">The name which should be parsed.</param>
     /// <returns>A <see cref="ParsedName"/> struct containing the cleaned title and parsed tags.</returns>
     public static ParsedName ParseName(string name)
     {
-        List<string> tags = [];
-        string title = _tagRegex.Replace(
-            name,
-            (match) =>
-            {
-                for (int i = 1; i < match.Groups.Count; ++i)
-                {
-                    Group g = match.Groups[i];
-                    if (g.Success)
-                    {
-                        tags.Add(g.Value);
-                    }
-                }
-
-                return string.Empty;
-            });
-
-        // Tag prefixes separated by the a character in the unicode Block Elements range
-        int stripLength = 0;
-        for (int i = 0; i < title.Length; i++)
-        {
-            char c = title[i];
-            if (c >= '\u2580' && c <= '\u259F')
-            {
-                tags.Add(title[stripLength..i].Trim());
-                stripLength = i + 1;
-            }
-        }
-
-        return new ParsedName
-        {
-            Title = CleanupName(title[stripLength..]),
-            Tags = [.. tags],
-        };
-    }
-
-    private static string CleanupName(string name)
-    {
-        string result = name.Trim();
-        string rules = Plugin.Instance.Configuration.NameCleanupRules;
-        if (string.IsNullOrWhiteSpace(rules))
-        {
-            return result;
-        }
-
-        foreach (string rule in rules.Split(["\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (rule[0] == '#')
-            {
-                continue;
-            }
-
-            string[] parts = rule.Split("=>", 2, StringSplitOptions.TrimEntries);
-            string pattern = parts[0];
-            string replacement = parts.Length > 1 ? DecodeReplacement(parts[1]) : string.Empty;
-            if (string.IsNullOrWhiteSpace(pattern))
-            {
-                continue;
-            }
-
-            try
-            {
-                result = Regex.Replace(result, pattern, replacement, RegexOptions.CultureInvariant);
-            }
-            catch (ArgumentException)
-            {
-                // Ignore invalid user-defined cleanup rules instead of breaking channel loading.
-            }
-        }
-
-        return WhitespaceRegex().Replace(result, " ").Trim();
-    }
-
-    private static string DecodeReplacement(string replacement)
-    {
-        return replacement
-            .Replace("\\t", "\t", StringComparison.Ordinal)
-            .Replace("\\n", "\n", StringComparison.Ordinal);
+        return Plugin.Instance.NameNormalizer.Normalize(name, NameScope.Filesystem);
     }
 
     private bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
@@ -214,19 +131,48 @@ public partial class StreamService(IXtreamClient xtreamClient)
     /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
     public async Task<IEnumerable<StreamInfo>> GetLiveStreamsWithOverrides(CancellationToken cancellationToken)
     {
-        PluginConfiguration config = Plugin.Instance.Configuration;
         IEnumerable<StreamInfo> streams = await GetLiveStreams(cancellationToken).ConfigureAwait(false);
+        NameNormalizationSnapshot snapshot = nameNormalizer.CreateSnapshot();
         return streams.Select((StreamInfo stream) =>
         {
-            if (config.LiveTvOverrides.TryGetValue(stream.StreamId, out ChannelOverrides? overrides))
-            {
-                stream.Num = overrides.Number ?? stream.Num;
-                stream.Name = overrides.Name ?? stream.Name;
-                stream.StreamIcon = overrides.LogoUrl ?? stream.StreamIcon;
-            }
-
+            stream.Name = ApplyLiveStreamOverrides(stream, snapshot).Title;
             return stream;
         });
+    }
+
+    /// <summary>
+    /// Normalizes a raw provider channel name and applies configured manual overrides.
+    /// A manual name is returned verbatim so explicit administrator choices remain final.
+    /// </summary>
+    /// <param name="stream">The raw provider stream, whose number and icon may be overridden.</param>
+    /// <param name="snapshot">The immutable normalization snapshot for this operation.</param>
+    /// <returns>The final display name and provider prefix tags.</returns>
+    public ParsedName ApplyLiveStreamOverrides(StreamInfo stream, NameNormalizationSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ArgumentNullException.ThrowIfNull(snapshot);
+
+        string providerName = stream.Name;
+        ParsedName parsedName = snapshot.Normalize(providerName, NameScope.LiveChannel);
+        if (Plugin.Instance.Configuration.LiveTvOverrides.TryGetValue(stream.StreamId, out ChannelOverrides? overrides))
+        {
+            stream.Num = overrides.Number ?? stream.Num;
+            stream.StreamIcon = overrides.LogoUrl ?? stream.StreamIcon;
+            if (overrides.Name is not null)
+            {
+                return new ParsedName(overrides.Name, parsedName.Tags);
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(parsedName.Title))
+        {
+            string fallback = string.IsNullOrWhiteSpace(providerName)
+                ? $"Channel {stream.StreamId.ToString(CultureInfo.InvariantCulture)}"
+                : providerName.Trim();
+            return new ParsedName(fallback, parsedName.Tags);
+        }
+
+        return parsedName;
     }
 
     /// <summary>
@@ -237,7 +183,22 @@ public partial class StreamService(IXtreamClient xtreamClient)
     /// <returns>A channel item representing the category.</returns>
     public static ChannelItemInfo CreateChannelItemInfo(int prefix, Category category)
     {
-        ParsedName parsedName = ParseName(category.CategoryName);
+        return CreateChannelItemInfo(prefix, category, Plugin.Instance.NameNormalizer.CreateSnapshot());
+    }
+
+    /// <summary>
+    /// Gets a channel item for a category using an immutable name-normalization snapshot.
+    /// </summary>
+    /// <param name="prefix">The channel category prefix.</param>
+    /// <param name="category">The Xtream category.</param>
+    /// <param name="snapshot">The immutable normalization snapshot for this operation.</param>
+    /// <returns>A channel item representing the category.</returns>
+    public static ChannelItemInfo CreateChannelItemInfo(
+        int prefix,
+        Category category,
+        NameNormalizationSnapshot snapshot)
+    {
+        ParsedName parsedName = snapshot.Normalize(category.CategoryName, NameScope.Category);
         return new ChannelItemInfo()
         {
             Id = ToGuid(prefix, category.CategoryId, 0, 0).ToString(),
@@ -433,29 +394,10 @@ public partial class StreamService(IXtreamClient xtreamClient)
         VideoInfo? videoInfo = null,
         AudioInfo? audioInfo = null)
     {
-        string prefix = string.Empty;
-        switch (type)
-        {
-            case StreamType.Series:
-                prefix = "/series";
-                break;
-            case StreamType.Vod:
-                prefix = "/movie";
-                break;
-        }
-
-        PluginConfiguration config = Plugin.Instance.Configuration;
-        string uri = $"{config.BaseUrl}{prefix}/{config.Username}/{config.Password}/{id}";
-        if (!string.IsNullOrEmpty(extension))
-        {
-            uri += $".{extension}";
-        }
-
-        if (type == StreamType.CatchUp)
-        {
-            string? startString = start?.ToString("yyyy'-'MM'-'dd':'HH'-'mm", CultureInfo.InvariantCulture);
-            uri = $"{config.BaseUrl}/streaming/timeshift.php?username={config.Username}&password={config.Password}&stream={id}&start={startString}&duration={durationMinutes}";
-        }
+        ConnectionInfo connection = Plugin.Instance.Creds;
+        string uri = restream
+            ? StreamUriBuilder.Build(connection, type, id, extension, start, durationMinutes).ToString()
+            : proxyUrlBuilder.Build(connection, type, id, extension, start, durationMinutes);
 
         bool isLive = type == StreamType.Live;
         return new MediaSourceInfo()
@@ -508,12 +450,4 @@ public partial class StreamService(IXtreamClient xtreamClient)
             SupportsProbing = true,
         };
     }
-
-    // Matches tags in brackets [TAG] or pipe-delimited |TAG| (with optional spaces and Unicode pipe variants)
-    // Pipe variants: | (U+007C), │ (U+2502), ┃ (U+2503), ｜ (U+FF5C)
-    [GeneratedRegex(@"\[([^\]]+)\]|[|│┃｜]\s*([^|│┃｜]+?)\s*[|│┃｜]")]
-    private static partial Regex TagRegex();
-
-    [GeneratedRegex(@"\s+")]
-    private static partial Regex WhitespaceRegex();
 }

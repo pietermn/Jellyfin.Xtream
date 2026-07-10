@@ -21,23 +21,23 @@ namespace Jellyfin.Xtream.Client;
 /// <param name="baseUrl">The base url including protocol and port number, without trailing slash.</param>
 /// <param name="username">The username for authentication.</param>
 /// <param name="password">The password for authentication.</param>
-public class ConnectionInfo(string baseUrl, string username, string password)
+public sealed class ConnectionInfo(string baseUrl, string username, string password)
 {
     /// <summary>
-    /// Gets or sets the base url including protocol and port number, without trailing slash.
+    /// Gets the base url including protocol and port number, without trailing slash.
     /// </summary>
-    public string BaseUrl { get; set; } = baseUrl;
+    public string BaseUrl { get; } = baseUrl;
 
     /// <summary>
-    /// Gets or sets the username for authentication.
+    /// Gets the username for authentication.
     /// </summary>
-    public string UserName { get; set; } = username;
+    public string UserName { get; } = username;
 
     /// <summary>
-    /// Gets or sets the password for authentication.
+    /// Gets the password for authentication.
     /// </summary>
-    public string Password { get; set; } = password;
+    public string Password { get; } = password;
 
     /// <inheritdoc />
-    public override string ToString() => $"{BaseUrl} {UserName}:{Password}";
+    public override string ToString() => $"{BaseUrl} (credentials redacted)";
 }

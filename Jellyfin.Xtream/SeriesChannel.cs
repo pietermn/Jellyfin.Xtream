@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -35,7 +36,10 @@ namespace Jellyfin.Xtream;
 /// The Xtream Codes API channel.
 /// </summary>
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
-public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMediaSourceDisplay
+/// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+public class SeriesChannel(
+    ILogger<SeriesChannel> logger,
+    NameNormalizationService nameNormalizer) : IChannel, IDisableMediaSourceDisplay
 {
     /// <inheritdoc />
     public string? Name => "Xtream Series";
@@ -125,9 +129,9 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
         };
     }
 
-    private ChannelItemInfo CreateChannelItemInfo(Series series)
+    private static ChannelItemInfo CreateChannelItemInfo(Series series, NameNormalizationSnapshot names)
     {
-        ParsedName parsedName = StreamService.ParseName(series.Name);
+        ParsedName parsedName = names.Normalize(series.Name, NameScope.Series);
         return new ChannelItemInfo()
         {
             CommunityRating = (float)series.Rating5Based,
@@ -157,7 +161,11 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
         }).ToList();
     }
 
-    private ChannelItemInfo CreateChannelItemInfo(int seriesId, SeriesStreamInfo series, int seasonId)
+    private static ChannelItemInfo CreateChannelItemInfo(
+        int seriesId,
+        SeriesStreamInfo series,
+        int seasonId,
+        NameNormalizationSnapshot names)
     {
         Client.Models.SeriesInfo serie = series.Info;
         string name = $"Season {seasonId}";
@@ -169,7 +177,7 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
         Season? season = series.Seasons.FirstOrDefault(s => s.SeasonNumber == seasonId || s.SeasonId == seasonId);
         if (season != null)
         {
-            ParsedName parsedName = StreamService.ParseName(season.Name);
+            ParsedName parsedName = names.Normalize(season.Name, NameScope.Season);
             name = parsedName.Title;
             tags.AddRange(parsedName.Tags);
             created = season.AirDate;
@@ -195,10 +203,17 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
         };
     }
 
-    private ChannelItemInfo CreateChannelItemInfo(SeriesStreamInfo series, Season? season, Episode episode)
+    private static ChannelItemInfo CreateChannelItemInfo(
+        SeriesStreamInfo series,
+        Season? season,
+        Episode episode,
+        NameNormalizationSnapshot names)
     {
         Client.Models.SeriesInfo serie = series.Info;
-        ParsedName parsedName = StreamService.ParseName(episode.Title);
+        ParsedName parsedName = names.Normalize(episode.Title, NameScope.Episode);
+        string episodeTitle = string.IsNullOrWhiteSpace(parsedName.Title)
+            ? $"Episode {episode.EpisodeNum.ToString(CultureInfo.InvariantCulture)}"
+            : parsedName.Title;
         List<MediaSourceInfo> sources =
         [
             Plugin.Instance.StreamService.GetMediaSourceInfo(
@@ -223,7 +238,7 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
             IsLiveStream = false,
             MediaSources = sources,
             MediaType = ChannelMediaType.Video,
-            Name = $"Episode {episode.EpisodeNum}",
+            Name = episodeTitle,
             Overview = episode.Info?.Plot,
             ParentIndexNumber = episode.Season,
             People = GetPeople(serie.Cast),
@@ -236,8 +251,9 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
     private async Task<ChannelItemResult> GetCategories(CancellationToken cancellationToken)
     {
         IEnumerable<Category> categories = await Plugin.Instance.StreamService.GetSeriesCategories(cancellationToken).ConfigureAwait(false);
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         List<ChannelItemInfo> items = new(
-            categories.Select((Category category) => StreamService.CreateChannelItemInfo(StreamService.SeriesCategoryPrefix, category)));
+            categories.Select((Category category) => StreamService.CreateChannelItemInfo(StreamService.SeriesCategoryPrefix, category, names)));
         return new()
         {
             Items = items,
@@ -248,7 +264,8 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
     private async Task<ChannelItemResult> GetSeries(int categoryId, CancellationToken cancellationToken)
     {
         IEnumerable<Series> series = await Plugin.Instance.StreamService.GetSeries(categoryId, cancellationToken).ConfigureAwait(false);
-        List<ChannelItemInfo> items = new(series.Select(CreateChannelItemInfo));
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
+        List<ChannelItemInfo> items = new(series.Select(item => CreateChannelItemInfo(item, names)));
         return new()
         {
             Items = items,
@@ -259,8 +276,9 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
     private async Task<ChannelItemResult> GetSeasons(int seriesId, CancellationToken cancellationToken)
     {
         IEnumerable<Tuple<SeriesStreamInfo, int>> seasons = await Plugin.Instance.StreamService.GetSeasons(seriesId, cancellationToken).ConfigureAwait(false);
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         List<ChannelItemInfo> items = new(
-            seasons.Select((Tuple<SeriesStreamInfo, int> tuple) => CreateChannelItemInfo(seriesId, tuple.Item1, tuple.Item2)));
+            seasons.Select((Tuple<SeriesStreamInfo, int> tuple) => CreateChannelItemInfo(seriesId, tuple.Item1, tuple.Item2, names)));
         return new()
         {
             Items = items,
@@ -271,8 +289,9 @@ public class SeriesChannel(ILogger<SeriesChannel> logger) : IChannel, IDisableMe
     private async Task<ChannelItemResult> GetEpisodes(int seriesId, int seasonId, CancellationToken cancellationToken)
     {
         IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>> episodes = await Plugin.Instance.StreamService.GetEpisodes(seriesId, seasonId, cancellationToken).ConfigureAwait(false);
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         List<ChannelItemInfo> items = new List<ChannelItemInfo>(
-            episodes.Select((Tuple<SeriesStreamInfo, Season?, Episode> tuple) => CreateChannelItemInfo(tuple.Item1, tuple.Item2, tuple.Item3)));
+            episodes.Select((Tuple<SeriesStreamInfo, Season?, Episode> tuple) => CreateChannelItemInfo(tuple.Item1, tuple.Item2, tuple.Item3, names)));
         return new()
         {
             Items = items,

@@ -43,7 +43,14 @@ namespace Jellyfin.Xtream;
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 /// <param name="memoryCache">Instance of the <see cref="IMemoryCache"/> interface.</param>
 /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
-public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger<LiveTvService> logger, IMemoryCache memoryCache, IXtreamClient xtreamClient) : ILiveTvService, ISupportsDirectStreamProvider
+/// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
+public class LiveTvService(
+    IServerApplicationHost appHost,
+    IHttpClientFactory httpClientFactory,
+    ILogger<LiveTvService> logger,
+    IMemoryCache memoryCache,
+    IXtreamClient xtreamClient,
+    NameNormalizationService nameNormalizer) : ILiveTvService, ISupportsDirectStreamProvider
 {
     /// <inheritdoc />
     public string Name => "Xtream Live";
@@ -56,9 +63,10 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     {
         Plugin plugin = Plugin.Instance;
         List<ChannelInfo> items = [];
-        foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreamsWithOverrides(cancellationToken).ConfigureAwait(false))
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
+        foreach (StreamInfo channel in await plugin.StreamService.GetLiveStreams(cancellationToken).ConfigureAwait(false))
         {
-            ParsedName parsed = StreamService.ParseName(channel.Name);
+            ParsedName parsed = plugin.StreamService.ApplyLiveStreamOverrides(channel, names);
             items.Add(new ChannelInfo()
             {
                 Id = StreamService.ToGuid(StreamService.LiveTvPrefix, channel.StreamId, 0, 0).ToString(),
@@ -130,7 +138,14 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
     /// <inheritdoc />
     public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        Guid guid = Guid.Parse(channelId);
+        StreamService.FromGuid(guid, out int prefix, out int channel, out int _, out int _);
+        if (prefix != StreamService.LiveTvPrefix)
+        {
+            throw new ArgumentException("Unsupported channel", nameof(channelId));
+        }
+
+        return Task.FromResult(Plugin.Instance.StreamService.GetMediaSourceInfo(StreamType.Live, channel));
     }
 
     /// <inheritdoc />
@@ -163,7 +178,8 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
             throw new ArgumentException("Unsupported channel");
         }
 
-        string key = $"xtream-epg-{channelId}";
+        NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
+        string key = $"xtream-epg-{channelId}-names-{names.Version.ToString(CultureInfo.InvariantCulture)}";
         ICollection<ProgramInfo>? items = null;
         if (memoryCache.TryGetValue(key, out ICollection<ProgramInfo>? o))
         {
@@ -177,13 +193,17 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
                 EpgListings epgs = await xtreamClient.GetEpgInfoAsync(plugin.Creds, streamId, cancellationToken).ConfigureAwait(false);
                 foreach (EpgInfo epg in epgs.Listings)
                 {
+                    ParsedName parsedName = names.Normalize(epg.Title, NameScope.LiveProgram);
+                    string programName = string.IsNullOrWhiteSpace(parsedName.Title)
+                        ? "Untitled program"
+                        : parsedName.Title;
                     items.Add(new()
                     {
                         Id = StreamService.ToGuid(StreamService.EpgPrefix, streamId, epg.Id, 0).ToString(),
                         ChannelId = channelId,
                         StartDate = epg.Start,
                         EndDate = epg.End,
-                        Name = epg.Title,
+                        Name = programName,
                         Overview = epg.Description,
                     });
                 }
@@ -215,7 +235,10 @@ public class LiveTvService(IServerApplicationHost appHost, IHttpClientFactory ht
 
         Plugin plugin = Plugin.Instance;
         MediaSourceInfo mediaSourceInfo = plugin.StreamService.GetMediaSourceInfo(StreamType.Live, channel, restream: true);
-        ILiveStream? stream = currentLiveStreams.Find(stream => stream.TunerHostId == Restream.TunerHost && stream.MediaSource.Id == mediaSourceInfo.Id);
+        ILiveStream? stream = currentLiveStreams.Find(stream =>
+            stream.TunerHostId == Restream.TunerHost
+            && stream.MediaSource.Id == mediaSourceInfo.Id
+            && stream.EnableStreamSharing);
 
         if (stream == null)
         {

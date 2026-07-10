@@ -6,7 +6,7 @@ This fork can be published as a custom Jellyfin plugin repository through GitHub
 
 1. Create a new GitHub repository, for example `Jellyfin.Xtream`.
 2. Push this fork to your repository.
-3. In GitHub, create a release with tag `v0.8.2`.
+3. In GitHub, create a release matching the version in `build.yaml`, for example `v0.9.0`.
 4. Wait for the `Publish Plugin` workflow to finish.
 5. In the repository settings, enable GitHub Pages for the branch created by the workflow.
 

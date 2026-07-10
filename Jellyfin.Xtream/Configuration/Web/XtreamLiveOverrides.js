@@ -56,7 +56,7 @@ export default function (view) {
     Dashboard.showLoadingMsg();
     Promise.all([
       getConfig.then((config) => config.LiveTvOverrides),
-      Xtream.fetchJson('Xtream/LiveTv'),
+      Xtream.fetchJson('Plugins/JellyfinXtream/v1/LiveTv'),
     ]).then(([data, channels]) => {
       for (const channel of channels) {
         data[channel.Id] ??= {};
@@ -65,7 +65,7 @@ export default function (view) {
       }
       Dashboard.hideLoadingMsg();
 
-      view.querySelector('#XtreamLiveOverridesForm').addEventListener('submit', (e) => {
+      view.querySelector('#XtreamLiveOverridesForm').onsubmit = (e) => {
         Dashboard.showLoadingMsg();
 
         ApiClient.getPluginConfiguration(pluginId).then((config) => {
@@ -80,7 +80,7 @@ export default function (view) {
 
         e.preventDefault();
         return false;
-      });
+      };
     });
   }));
 }

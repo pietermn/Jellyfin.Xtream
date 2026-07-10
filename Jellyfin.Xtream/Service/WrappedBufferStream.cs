@@ -15,6 +15,7 @@
 
 using System;
 using System.IO;
+using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -23,23 +24,35 @@ namespace Jellyfin.Xtream.Service;
 /// <summary>
 /// Stream which writes to a self-overwriting internal buffer.
 /// </summary>
-/// <param name="bufferSize">Size in bytes of the internal buffer.</param>
-public class WrappedBufferStream(int bufferSize) : Stream
+public class WrappedBufferStream : Stream
 {
     private readonly object _syncRoot = new();
-
+    private bool _completed;
+    private bool _disposed;
+    private ExceptionDispatchInfo? _failure;
+    private TaskCompletionSource? _stateChanged;
     private long _totalBytesWritten;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="WrappedBufferStream"/> class.
+    /// </summary>
+    /// <param name="bufferSize">Size in bytes of the internal buffer.</param>
+    public WrappedBufferStream(int bufferSize)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(bufferSize);
+        Buffer = new byte[bufferSize];
+    }
 
     /// <summary>
     /// Gets the maximal size in bytes of read/write chunks.
     /// </summary>
-    public int BufferSize { get => Buffer.Length; }
+    public int BufferSize => Buffer.Length;
 
 #pragma warning disable CA1819
     /// <summary>
     /// Gets the internal buffer.
     /// </summary>
-    public byte[] Buffer { get; } = new byte[bufferSize];
+    public byte[] Buffer { get; }
 #pragma warning restore CA1819
 
     /// <summary>
@@ -63,20 +76,28 @@ public class WrappedBufferStream(int bufferSize) : Stream
         {
             lock (_syncRoot)
             {
+                ThrowIfDisposedLocked();
                 return _totalBytesWritten % BufferSize;
             }
         }
 
-        set
-        {
-        }
+        set => throw new NotSupportedException();
     }
 
     /// <inheritdoc />
     public override bool CanRead => false;
 
     /// <inheritdoc />
-    public override bool CanWrite => true;
+    public override bool CanWrite
+    {
+        get
+        {
+            lock (_syncRoot)
+            {
+                return !_completed && !_disposed;
+            }
+        }
+    }
 
     /// <inheritdoc />
     public override bool CanSeek => false;
@@ -90,11 +111,15 @@ public class WrappedBufferStream(int bufferSize) : Stream
     /// <inheritdoc />
     public override void Write(byte[] buffer, int offset, int count)
     {
-        lock (_syncRoot)
+        ArgumentNullException.ThrowIfNull(buffer);
+        ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        ArgumentOutOfRangeException.ThrowIfNegative(count);
+        if (buffer.Length - offset < count)
         {
-            WriteLocked(buffer, offset, count);
-            Monitor.PulseAll(_syncRoot);
+            throw new ArgumentException("Offset and count exceed the buffer length.", nameof(count));
         }
+
+        Write(buffer.AsSpan(offset, count));
     }
 
     /// <inheritdoc />
@@ -102,8 +127,9 @@ public class WrappedBufferStream(int bufferSize) : Stream
     {
         lock (_syncRoot)
         {
+            ThrowIfNotWritableLocked();
             WriteLocked(buffer);
-            Monitor.PulseAll(_syncRoot);
+            SignalStateChangedLocked();
         }
     }
 
@@ -132,119 +158,245 @@ public class WrappedBufferStream(int bufferSize) : Stream
     /// <inheritdoc />
     public override void Flush()
     {
-        // Do nothing
+        // Nothing is buffered outside the ring.
     }
 
-    internal long GetRecentReadHead(int maxPrerollBytes)
+    /// <inheritdoc />
+    public override Task FlushAsync(CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
+
+    internal ReaderState CreateReader(int maxPrerollBytes)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxPrerollBytes);
         lock (_syncRoot)
         {
-            return GetRecentReadHeadLocked(maxPrerollBytes);
+            ThrowIfDisposedLocked();
+            return new ReaderState(GetRecentReadHeadLocked(maxPrerollBytes));
         }
     }
 
-    internal int Read(ref long readHead, byte[] buffer, int offset, int count, int maxPrerollBytes)
+    internal long GetReadHead(ReaderState reader)
     {
+        ArgumentNullException.ThrowIfNull(reader);
         lock (_syncRoot)
         {
-            long gap = WaitForReadableDataLocked(ref readHead, maxPrerollBytes);
-            long canCopy = Math.Min(count, gap);
-            long read = 0;
+            return reader.ReadHead;
+        }
+    }
 
-            // Copy inside a loop to simplify wrapping logic.
-            while (read < canCopy)
+    internal long GetTotalBytesRead(ReaderState reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        lock (_syncRoot)
+        {
+            return reader.TotalBytesRead;
+        }
+    }
+
+    internal int Read(ReaderState reader, Span<byte> buffer, int maxPrerollBytes)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxPrerollBytes);
+        if (buffer.Length == 0)
+        {
+            return 0;
+        }
+
+        lock (_syncRoot)
+        {
+            while (true)
             {
-                long position = readHead % BufferSize;
-                long readable = Math.Min(canCopy - read, BufferSize - position);
+                int bytesRead = TryReadLocked(reader, buffer, maxPrerollBytes);
+                if (bytesRead >= 0)
+                {
+                    return bytesRead;
+                }
 
-                Array.Copy(Buffer, position, buffer, offset + read, readable);
-                read += readable;
-                readHead += readable;
+                Monitor.Wait(_syncRoot);
+            }
+        }
+    }
+
+    internal async ValueTask<int> ReadAsync(
+        ReaderState reader,
+        Memory<byte> buffer,
+        int maxPrerollBytes,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentOutOfRangeException.ThrowIfNegative(maxPrerollBytes);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (buffer.Length == 0)
+        {
+            return 0;
+        }
+
+        while (true)
+        {
+            Task stateChanged;
+            lock (_syncRoot)
+            {
+                int bytesRead = TryReadLocked(reader, buffer.Span, maxPrerollBytes);
+                if (bytesRead >= 0)
+                {
+                    return bytesRead;
+                }
+
+                _stateChanged ??= CreateStateChangedSource();
+                stateChanged = _stateChanged.Task;
             }
 
-            return (int)read;
+            await stateChanged.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
-    internal int Read(ref long readHead, Span<byte> buffer, int maxPrerollBytes)
+    internal void DisposeReader(ReaderState reader)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        lock (_syncRoot)
+        {
+            if (reader.IsDisposed)
+            {
+                return;
+            }
+
+            reader.IsDisposed = true;
+            SignalStateChangedLocked();
+        }
+    }
+
+    internal void Complete(Exception? failure = null)
     {
         lock (_syncRoot)
         {
-            long gap = WaitForReadableDataLocked(ref readHead, maxPrerollBytes);
-            int canCopy = (int)Math.Min(buffer.Length, gap);
-            int read = 0;
-
-            // Copy inside a loop to simplify wrapping logic.
-            while (read < canCopy)
+            if (_completed || _disposed)
             {
-                int position = (int)(readHead % BufferSize);
-                int readable = Math.Min(canCopy - read, BufferSize - position);
-
-                Buffer.AsSpan(position, readable).CopyTo(buffer.Slice(read, readable));
-                read += readable;
-                readHead += readable;
+                return;
             }
 
-            return read;
+            _failure = failure is null ? null : ExceptionDispatchInfo.Capture(failure);
+            _completed = true;
+            SignalStateChangedLocked();
         }
     }
 
-    private void WriteLocked(byte[] buffer, int offset, int count)
+    /// <inheritdoc />
+    protected override void Dispose(bool disposing)
     {
-        long written = 0;
-
-        // Copy inside a loop to simplify wrapping logic.
-        while (written < count)
+        if (disposing)
         {
-            long position = _totalBytesWritten % BufferSize;
-            long writable = Math.Min(count - written, BufferSize - position);
-
-            Array.Copy(buffer, offset + written, Buffer, position, writable);
-            written += writable;
-            _totalBytesWritten += writable;
+            lock (_syncRoot)
+            {
+                if (!_disposed)
+                {
+                    _disposed = true;
+                    _completed = true;
+                    SignalStateChangedLocked();
+                }
+            }
         }
+
+        base.Dispose(disposing);
     }
 
-    private void WriteLocked(ReadOnlySpan<byte> buffer)
+    private static TaskCompletionSource CreateStateChangedSource()
+        => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private int TryReadLocked(ReaderState reader, Span<byte> buffer, int maxPrerollBytes)
     {
-        int written = 0;
+        ObjectDisposedException.ThrowIf(reader.IsDisposed, reader);
 
-        // Copy inside a loop to simplify wrapping logic.
-        while (written < buffer.Length)
+        ThrowIfDisposedLocked();
+
+        long gap = _totalBytesWritten - reader.ReadHead;
+        if (gap > BufferSize)
         {
-            long position = _totalBytesWritten % BufferSize;
-            int writable = Math.Min(buffer.Length - written, BufferSize - (int)position);
+            // Live playback is better served by dropping stale bytes than by failing the stream.
+            reader.ReadHead = GetRecentReadHeadLocked(maxPrerollBytes);
+            gap = _totalBytesWritten - reader.ReadHead;
+        }
 
-            buffer.Slice(written, writable).CopyTo(Buffer.AsSpan((int)position, writable));
-            written += writable;
+        if (gap > 0)
+        {
+            int bytesRead = CopyToReaderLocked(reader, buffer, gap);
+            reader.TotalBytesRead += bytesRead;
+            return bytesRead;
+        }
+
+        if (_failure is not null)
+        {
+            _failure.Throw();
+        }
+
+        return _completed ? 0 : -1;
+    }
+
+    private int CopyToReaderLocked(ReaderState reader, Span<byte> destination, long gap)
+    {
+        int canCopy = (int)Math.Min(destination.Length, gap);
+        int bytesRead = 0;
+        while (bytesRead < canCopy)
+        {
+            int position = (int)(reader.ReadHead % BufferSize);
+            int readable = Math.Min(canCopy - bytesRead, BufferSize - position);
+            Buffer.AsSpan(position, readable).CopyTo(destination.Slice(bytesRead, readable));
+            bytesRead += readable;
+            reader.ReadHead += readable;
+        }
+
+        return bytesRead;
+    }
+
+    private void WriteLocked(ReadOnlySpan<byte> source)
+    {
+        int bytesWritten = 0;
+        while (bytesWritten < source.Length)
+        {
+            int position = (int)(_totalBytesWritten % BufferSize);
+            int writable = Math.Min(source.Length - bytesWritten, BufferSize - position);
+            source.Slice(bytesWritten, writable).CopyTo(Buffer.AsSpan(position, writable));
+            bytesWritten += writable;
             _totalBytesWritten += writable;
         }
     }
 
     private long GetRecentReadHeadLocked(int maxPrerollBytes)
     {
-        int prerollBytes = Math.Min(maxPrerollBytes, BufferSize / 8);
+        int prerollBytes = Math.Min(maxPrerollBytes, BufferSize / 4);
         return Math.Max(0, _totalBytesWritten - prerollBytes);
     }
 
-    private long WaitForReadableDataLocked(ref long readHead, int maxPrerollBytes)
+    private void SignalStateChangedLocked()
     {
-        long gap = _totalBytesWritten - readHead;
+        TaskCompletionSource? previous = _stateChanged;
+        _stateChanged = null;
+        Monitor.PulseAll(_syncRoot);
+        previous?.TrySetResult();
+    }
 
-        // We cannot return with 0 bytes read, as that indicates the end of the stream has been reached.
-        while (gap == 0)
+    private void ThrowIfDisposedLocked()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private void ThrowIfNotWritableLocked()
+    {
+        ThrowIfDisposedLocked();
+        if (_completed)
         {
-            Monitor.Wait(_syncRoot);
-            gap = _totalBytesWritten - readHead;
+            throw new InvalidOperationException("The buffer has already completed.");
         }
+    }
 
-        if (gap > BufferSize)
-        {
-            // Live playback is better served by dropping stale bytes than by failing the stream.
-            readHead = GetRecentReadHeadLocked(maxPrerollBytes);
-            gap = _totalBytesWritten - readHead;
-        }
+    internal sealed class ReaderState(long readHead)
+    {
+        public bool IsDisposed { get; set; }
 
-        return gap;
+        public long ReadHead { get; set; } = readHead;
+
+        public long TotalBytesRead { get; set; }
     }
 }

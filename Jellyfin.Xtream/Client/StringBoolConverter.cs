@@ -14,7 +14,6 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
-using System.Text;
 using Newtonsoft.Json;
 
 namespace Jellyfin.Xtream.Client;
@@ -27,29 +26,32 @@ public class StringBoolConverter : JsonConverter
     /// <inheritdoc />
     public override bool CanConvert(Type objectType)
     {
-        return objectType == typeof(string);
+        return objectType == typeof(bool) || objectType == typeof(bool?);
     }
 
     /// <inheritdoc />
     public override object ReadJson(JsonReader reader, Type objectType, object? existingValue, JsonSerializer serializer)
     {
-        if (reader.Value == null)
+        if (reader.TokenType == JsonToken.Null)
         {
-            throw new ArgumentException("Value cannot be null.");
+            return objectType == typeof(bool?) ? null! : false;
         }
 
-        return "1".Equals((string)reader.Value, StringComparison.Ordinal);
+        return reader.Value switch
+        {
+            bool boolValue => boolValue,
+            long integerValue => integerValue != 0,
+            int integerValue => integerValue != 0,
+            string stringValue => string.Equals(stringValue, "1", StringComparison.Ordinal)
+                || string.Equals(stringValue, "true", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(stringValue, "yes", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
     }
 
     /// <inheritdoc />
     public override void WriteJson(JsonWriter writer, object? value, JsonSerializer serializer)
     {
-        if (value == null)
-        {
-            throw new ArgumentException("Value cannot be null.");
-        }
-
-        string result = (bool)value ? "1" : "0";
-        writer.WriteValue(result);
+        writer.WriteValue(value is true ? "1" : "0");
     }
 }

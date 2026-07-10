@@ -13,24 +13,21 @@ export default function (view) {
     getConfig.then((config) => visible.checked = config.IsSeriesVisible);
     const strmExportEnabled = view.querySelector("#StrmExportEnabled");
     getConfig.then((config) => strmExportEnabled.checked = config.IsSeriesStrmExportEnabled);
-    const strmExportDeduplicationEnabled = view.querySelector("#StrmExportDeduplicationEnabled");
-    getConfig.then((config) => strmExportDeduplicationEnabled.checked = config.IsSeriesStrmExportDeduplicationEnabled ?? true);
     const strmExportPath = view.querySelector("#StrmExportPath");
     getConfig.then((config) => strmExportPath.value = config.SeriesStrmExportPath || '');
     const table = view.querySelector('#SeriesContent');
     Xtream.populateCategoriesTable(
       table,
       () => getConfig.then((config) => config.Series),
-      () => Xtream.fetchJson('Xtream/SeriesCategories'),
-      (categoryId) => Xtream.fetchJson(`Xtream/SeriesCategories/${categoryId}`),
+      () => Xtream.fetchJson('Plugins/JellyfinXtream/v1/SeriesCategories'),
+      (categoryId) => Xtream.fetchJson(`Plugins/JellyfinXtream/v1/SeriesCategories/${categoryId}`),
     ).then((data) => {
-      view.querySelector('#XtreamSeriesForm').addEventListener('submit', (e) => {
+      view.querySelector('#XtreamSeriesForm').onsubmit = (e) => {
         Dashboard.showLoadingMsg();
 
         ApiClient.getPluginConfiguration(pluginId).then((config) => {
           config.IsSeriesVisible = visible.checked;
           config.IsSeriesStrmExportEnabled = strmExportEnabled.checked;
-          config.IsSeriesStrmExportDeduplicationEnabled = strmExportDeduplicationEnabled.checked;
           config.SeriesStrmExportPath = strmExportPath.value;
           config.Series = data;
           ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
@@ -40,7 +37,7 @@ export default function (view) {
 
         e.preventDefault();
         return false;
-      });
+      };
     }).catch((error) => {
       console.error('Failed to load series categories:', error);
       Dashboard.hideLoadingMsg();

@@ -7,16 +7,25 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate release metadata
+        run: ./scripts/validate-release-metadata.sh "${{ github.event.release.tag_name || github.ref_name }}"
   build:
-    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@master
+    needs: validate
+    uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@91aa56610cd3321f8897bbe2657c1743b3df3436
     with:
       dotnet-version: "9.0.*"
       dotnet-target: "net9.0"
   upload:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
       - build
     steps:
@@ -34,6 +43,8 @@ jobs:
       - name: Resolve GitHub Release
         id: release
         uses: actions/github-script@v7
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
         with:
           script: |-
             if (context.payload.release?.upload_url) {
@@ -41,9 +52,10 @@ jobs:
               return;
             }
 
-            const { data: release } = await github.rest.repos.getLatestRelease({
+            const { data: release } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner,
               repo: context.repo.repo,
+              tag: process.env.RELEASE_TAG,
             });
             core.setOutput('upload_url', release.upload_url);
       - name: Upload GitHub Release assets
@@ -53,6 +65,8 @@ jobs:
           asset_path: ./*
   generate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     needs:
       - upload
     steps:

@@ -5,9 +5,14 @@ const url = (name) =>
 const tab = (name) => '/configurationpage?name=' + name + '.html';
 
 $(document).ready(() => {
+  if (document.querySelector('link[data-jellyfin-xtream-style]')) {
+    return;
+  }
+
   const style = document.createElement('link');
   style.rel = 'stylesheet';
   style.href = url('Xtream.css')
+  style.dataset.jellyfinXtreamStyle = 'true';
   document.head.appendChild(style);
 });
 
@@ -111,7 +116,7 @@ const createCategoryRow = (wrapper, category, loadItems) => {
   }
 
   td = document.createElement('td');
-  td.innerHTML = category.Name;
+  td.textContent = category.Name;
   tr.appendChild(td);
 
   td = document.createElement('td');
@@ -126,10 +131,15 @@ const createCategoryRow = (wrapper, category, loadItems) => {
     Dashboard.showLoadingMsg();
     expand.firstElementChild.classList.replace('expand_more', 'expand_less');
     const table = document.createElement('table');
-    loadItems(category.Id).then((items) => {
-      populateItemsTable(_wrapper, table, items);
-      Dashboard.hideLoadingMsg();
-    });
+    loadItems(category.Id)
+      .then((items) => populateItemsTable(_wrapper, table, items))
+      .catch((error) => {
+        console.error('Failed to load Xtream items:', error);
+        const message = document.createElement('caption');
+        message.textContent = 'Failed to load items. Check the server logs.';
+        table.appendChild(message);
+      })
+      .finally(() => Dashboard.hideLoadingMsg());
     checkbox.onchange = () => {
       onchange();
       table.querySelectorAll('input[type="checkbox"]').forEach((c) => c.checked = checkbox.checked);
@@ -153,6 +163,7 @@ const createCategoryRow = (wrapper, category, loadItems) => {
 
 const populateCategoriesTable = (table, loadConfig, loadCategories, loadItems) => {
   Dashboard.showLoadingMsg();
+  table.replaceChildren();
   const fetchConfig = loadConfig();
   const fetchCategories = loadCategories();
 

@@ -27,7 +27,7 @@ export default function (view) {
       const timezone = view.querySelector("#ProviderTimezone");
       const mpegTs = view.querySelector("#ProviderMpegTs");
 
-      Xtream.fetchJson('Xtream/TestProvider').then(response => {
+      Xtream.fetchJson('Plugins/JellyfinXtream/v1/TestProvider').then(response => {
         status.innerText = response.Status;
         expiry.innerText = response.ExpiryDate;
         cons.innerText = response.ActiveConnections;
@@ -47,12 +47,12 @@ export default function (view) {
     };
     reloadStatus();
 
-    view.querySelector('#UserAgentFromBrowser').addEventListener('click', (e) => {
+    view.querySelector('#UserAgentFromBrowser').onclick = (e) => {
       e.preventDefault();
       view.querySelector('#UserAgent').value = navigator.userAgent;
-    });
+    };
 
-    view.querySelector('#XtreamCredentialsForm').addEventListener('submit', (e) => {
+    view.querySelector('#XtreamCredentialsForm').onsubmit = (e) => {
       Dashboard.showLoadingMsg();
 
       ApiClient.getPluginConfiguration(pluginId).then((config) => {
@@ -69,6 +69,6 @@ export default function (view) {
 
       e.preventDefault();
       return false;
-    });
+    };
   }));
 }

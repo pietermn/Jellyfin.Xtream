@@ -75,9 +75,10 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool IsVodStrmExportEnabled { get; set; }
 
     /// <summary>
-    /// Gets or sets a value indicating whether duplicate VOD STRM exports are skipped by cleaned title.
+    /// Gets or sets a value indicating whether the legacy VOD title-deduplication setting is enabled.
+    /// This setting is ignored by v0.9 because provider IDs keep same-title items distinct.
     /// </summary>
-    public bool IsVodStrmExportDeduplicationEnabled { get; set; } = true;
+    public bool IsVodStrmExportDeduplicationEnabled { get; set; }
 
     /// <summary>
     /// Gets or sets the folder where VOD STRM files are exported.
@@ -90,9 +91,10 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool IsSeriesStrmExportEnabled { get; set; }
 
     /// <summary>
-    /// Gets or sets a value indicating whether duplicate series STRM exports are skipped by cleaned title.
+    /// Gets or sets a value indicating whether the legacy series title-deduplication setting is enabled.
+    /// This setting is ignored by v0.9 because provider IDs keep same-title items distinct.
     /// </summary>
-    public bool IsSeriesStrmExportDeduplicationEnabled { get; set; } = true;
+    public bool IsSeriesStrmExportDeduplicationEnabled { get; set; }
 
     /// <summary>
     /// Gets or sets the folder where series STRM files are exported.
