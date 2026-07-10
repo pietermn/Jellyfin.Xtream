@@ -8,6 +8,14 @@
     "owner": "pietermn",
     "versions": [
       {
+        "changelog": "Custom build: increase live restream buffer, improve live buffer synchronization, preserve configured User-Agent for stream requests, update Jellyfin 10.11 dependencies, add configurable regex cleanup rules, add optional STRM export for selected movies and series, and skip duplicate cleaned STRM export titles.",
+        "checksum": "a56047a3375c4382ed6d27c4f2368363",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.12/jelly-xtream_0.8.12.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-10T11:07:14Z",
+        "version": "0.8.12.0"
+      },
+      {
         "changelog": "Handle Xtream provider HTTP errors cleanly and deduplicate STRM exports by stable stream, series, and episode IDs.",
         "checksum": "35d85f8130f6ae47815009136339f20d",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.8.11/jelly-xtream_0.8.11.0.zip",
