@@ -15,6 +15,14 @@ public class RestreamTests
     }
 
     [Fact]
+    public void ProviderOriginIsCapturedFromTheUpstreamMediaSource()
+    {
+        Uri origin = Restream.GetProviderOrigin("https://stream.provider.example:8443/live/user/password/1.ts");
+
+        Assert.Equal(new Uri("https://stream.provider.example:8443/"), origin);
+    }
+
+    [Fact]
     public async Task OpenIsIdempotentAndNaturalEndDisposesTransport()
     {
         TrackingMemoryStream upstream = new([1, 2, 3, 4]);

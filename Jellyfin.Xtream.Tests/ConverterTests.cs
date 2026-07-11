@@ -52,6 +52,7 @@ public class ConverterTests
     [InlineData("1700000000", 2023, 11, 14)]
     [InlineData("1700000000000", 2023, 11, 14)]
     [InlineData("2024-04-05T12:30:00Z", 2024, 4, 5)]
+    [InlineData("2016", 2016, 1, 1)]
     public void TolerantDateConverterAcceptsProviderVariants(
         string timestamp,
         int year,
@@ -64,6 +65,16 @@ public class ConverterTests
 
         Assert.Equal(new DateTime(year, month, day), value.Value.Date);
         Assert.Equal(DateTimeKind.Utc, value.Value.Kind);
+    }
+
+    [Fact]
+    public void EpisodeReleaseYearDoesNotAbortSeriesDeserialization()
+    {
+        SeriesStreamInfo value = JsonConvert.DeserializeObject<SeriesStreamInfo>(
+            "{\"info\":{},\"episodes\":{\"1\":[{\"id\":9817,\"episode_num\":1,\"title\":\"Episode\",\"info\":{\"releasedate\":\"2016\"}}]}}")!;
+
+        Episode episode = Assert.Single(value.Episodes[1]);
+        Assert.Equal(new DateTime(2016, 1, 1, 0, 0, 0, DateTimeKind.Utc), episode.Info!.ReleaseDate);
     }
 
     [Fact]

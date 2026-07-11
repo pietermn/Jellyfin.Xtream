@@ -77,7 +77,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             path => appHost.GetApiUrlForLocalAccess() + path,
             StreamBufferSize,
             Plugin.Instance.Configuration.UserAgent,
-            new Uri(Plugin.Instance.Creds.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute))
+            GetProviderOrigin(mediaSource.Path))
     {
     }
 
@@ -242,6 +242,16 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     {
         Dispose(true);
         GC.SuppressFinalize(this);
+    }
+
+    internal static Uri GetProviderOrigin(string sourcePath)
+    {
+        if (!Uri.TryCreate(sourcePath, UriKind.Absolute, out Uri? sourceUri))
+        {
+            throw new ArgumentException("The restream source must be an absolute URI.", nameof(sourcePath));
+        }
+
+        return new Uri(sourceUri.GetLeftPart(UriPartial.Authority) + "/", UriKind.Absolute);
     }
 
     private async Task OpenCoreAsync(CancellationToken openCancellationToken)

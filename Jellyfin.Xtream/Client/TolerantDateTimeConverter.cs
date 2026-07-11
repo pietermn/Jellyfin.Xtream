@@ -94,6 +94,14 @@ public sealed class TolerantDateTimeConverter : JsonConverter
     private static bool TryParseString(string text, out DateTime result)
     {
         string value = text.Trim();
+        if (value.Length == 4
+            && int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out int year)
+            && year is >= 1 and <= 9999)
+        {
+            result = new DateTime(year, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            return true;
+        }
+
         if (long.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long unixValue))
         {
             return TryParseUnixValue(unixValue, out result);
