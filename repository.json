@@ -8,6 +8,14 @@
     "owner": "pietermn",
     "versions": [
       {
+        "changelog": "Hotfix release for Live TV playback through providers that redirect stream URLs to public CDN hosts.\n\nChanges:\n- Allow Live TV stream/restream requests to follow public cross-origin provider redirects.\n- Keep Xtream API/metadata requests on strict same-origin redirect handling.\n- Reject redirects to private/local/metadata endpoints even for stream playback.\n- Bump plugin metadata to 0.9.2.0.\n\nVerification:\n- dotnet test Jellyfin.Xtream.sln -c Release: 142 passed.\n- Deployed build was verified on Jellyfin with Live TV playback-info returning HTTP 200 and no new origin errors.",
+        "checksum": "a0345ff2962849b2758c6b48d4dee282",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.9.2/jelly-xtream_0.9.2.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-11T11:04:24Z",
+        "version": "0.9.2.0"
+      },
+      {
         "changelog": "**Full Changelog**: https://github.com/pietermn/Jellyfin.Xtream/compare/v0.9.0...v0.9.1",
         "checksum": "e5026cecde2db3f12b4506e8d78543ab",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.9.1/jelly-xtream_0.9.1.0.zip",
