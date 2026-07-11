@@ -118,7 +118,8 @@ public sealed class StreamProxyController(
                 upstreamRequest,
                 new Uri(connection.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute),
                 HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken)
+                cancellationToken,
+                allowPublicCrossOriginRedirects: true)
             .ConfigureAwait(false);
         Response.StatusCode = (int)upstreamResponse.StatusCode;
         CopyResponseHeaders(upstreamResponse, Response);

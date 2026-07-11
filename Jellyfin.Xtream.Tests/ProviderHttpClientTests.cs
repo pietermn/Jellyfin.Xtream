@@ -104,6 +104,48 @@ public class ProviderHttpClientTests
         Assert.Single(handler.RequestUris);
     }
 
+    [Fact]
+    public async Task PublicCrossOriginRedirectCanBeAllowedForStreams()
+    {
+        using SequenceHandler handler = new(
+            _ => Redirect(HttpStatusCode.TemporaryRedirect, "https://cdn.provider.example/edge/stream.ts"),
+            _ => new HttpResponseMessage(HttpStatusCode.OK));
+        using ProviderHttpClient client = CreateClient(handler, _publicAddress);
+        using HttpRequestMessage request = new(HttpMethod.Get, "https://provider.example/live/user/password/1.ts");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            new Uri("https://provider.example/"),
+            HttpCompletionOption.ResponseHeadersRead,
+            CancellationToken.None,
+            allowPublicCrossOriginRedirects: true);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(
+            ["https://provider.example/live/user/password/1.ts", "https://cdn.provider.example/edge/stream.ts"],
+            handler.RequestUris);
+        Assert.All(handler.ApprovedAddresses, addresses => Assert.Equal(new[] { _publicAddress }, addresses));
+    }
+
+    [Fact]
+    public async Task CrossOriginRedirectToPrivateAddressIsRejectedEvenWhenAllowedForStreams()
+    {
+        using SequenceHandler handler = new(_ => Redirect(HttpStatusCode.TemporaryRedirect, "http://127.0.0.1/latest/meta-data/"));
+        using ProviderHttpClient client = CreateClient(handler, _publicAddress);
+        using HttpRequestMessage request = new(HttpMethod.Get, "https://provider.example/live/user/password/1.ts");
+
+        HttpRequestException exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => client.SendAsync(
+                request,
+                new Uri("https://provider.example/"),
+                HttpCompletionOption.ResponseHeadersRead,
+                CancellationToken.None,
+                allowPublicCrossOriginRedirects: true));
+
+        Assert.Contains("not publicly routable", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.RequestUris);
+    }
+
     [Theory]
     [InlineData("127.0.0.1")]
     [InlineData("10.20.30.40")]

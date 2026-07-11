@@ -72,7 +72,8 @@ public sealed class ProviderHttpClient : IDisposable
         HttpRequestMessage request,
         Uri providerBaseUri,
         HttpCompletionOption completionOption,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowPublicCrossOriginRedirects = false)
     {
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(providerBaseUri);
@@ -119,11 +120,21 @@ public sealed class ProviderHttpClient : IDisposable
                     }
 
                     Uri redirectUri = location.IsAbsoluteUri ? location : new Uri(currentRequest.RequestUri!, location);
-                    ProviderRedirectPolicy.EnsureSameOrigin(providerBaseUri, redirectUri);
+                    IPAddress[] redirectAddresses = approvedAddresses;
+                    if (!ProviderRedirectPolicy.IsSameOrigin(providerBaseUri, redirectUri))
+                    {
+                        if (!allowPublicCrossOriginRedirects)
+                        {
+                            ProviderRedirectPolicy.EnsureSameOrigin(providerBaseUri, redirectUri);
+                        }
+
+                        ProviderRedirectPolicy.EnsurePublicRedirectUri(redirectUri);
+                        redirectAddresses = await GetPublicRedirectAddressesAsync(redirectUri, cancellationToken).ConfigureAwait(false);
+                    }
 
                     redirectedRequest?.Dispose();
                     redirectedRequest = CloneForRedirect(request, redirectUri);
-                    redirectedRequest.Options.Set(_approvedAddressesKey, approvedAddresses);
+                    redirectedRequest.Options.Set(_approvedAddressesKey, redirectAddresses);
                     currentRequest = redirectedRequest;
                 }
                 catch
@@ -210,6 +221,15 @@ public sealed class ProviderHttpClient : IDisposable
         {
             _endpointResolutionLock.Release();
         }
+    }
+
+    private async Task<IPAddress[]> GetPublicRedirectAddressesAsync(Uri redirectUri, CancellationToken cancellationToken)
+    {
+        string host = redirectUri.IdnHost.TrimEnd('.');
+        IPAddress[] resolved = IPAddress.TryParse(host, out IPAddress? literalAddress)
+            ? [literalAddress]
+            : await _resolveAddresses(host, cancellationToken).ConfigureAwait(false);
+        return ProviderRedirectPolicy.SelectPublicAddresses(host, resolved);
     }
 
     private static async ValueTask<Stream> ConnectApprovedEndpointAsync(

@@ -150,7 +150,35 @@ public class RestreamTests
     }
 
     [Fact]
-    public async Task CrossOriginRedirectIsRejectedWithoutContactingTarget()
+    public async Task PublicCrossOriginRedirectIsFollowedForStreams()
+    {
+        using SequenceHandler handler = new(
+            _ =>
+            {
+                HttpResponseMessage response = new(HttpStatusCode.TemporaryRedirect);
+                response.Headers.Location = new Uri("https://cdn.provider.example/edge/stream.ts");
+                return response;
+            },
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new ByteArrayContent([100]),
+            });
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
+
+        await restream.Open(CancellationToken.None);
+        await using Stream reader = restream.GetStream();
+        byte[] destination = new byte[1];
+
+        Assert.Equal(1, await reader.ReadAsync(destination));
+        Assert.Equal(100, destination[0]);
+        Assert.Equal(
+            ["https://provider.example/live/user/password/1.ts", "https://cdn.provider.example/edge/stream.ts"],
+            handler.RequestUris);
+    }
+
+    [Fact]
+    public async Task CrossOriginPrivateRedirectIsRejectedWithoutContactingTarget()
     {
         using SequenceHandler handler = new(
             _ =>
@@ -165,7 +193,7 @@ public class RestreamTests
         HttpRequestException exception = await Assert.ThrowsAsync<HttpRequestException>(
             () => restream.Open(CancellationToken.None));
 
-        Assert.Contains("configured provider origin", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("not publicly routable", exception.Message, StringComparison.Ordinal);
         Assert.Single(handler.RequestUris);
     }
 

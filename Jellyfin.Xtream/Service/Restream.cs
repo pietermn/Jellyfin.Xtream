@@ -413,7 +413,8 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 request,
                 _providerBaseUri,
                 HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken)
+                cancellationToken,
+                allowPublicCrossOriginRedirects: true)
             .ConfigureAwait(false);
     }
 

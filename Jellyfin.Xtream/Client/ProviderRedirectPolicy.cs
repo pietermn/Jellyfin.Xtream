@@ -39,17 +39,33 @@ internal static class ProviderRedirectPolicy
 
     internal static void EnsureSameOrigin(Uri providerBaseUri, Uri requestUri)
     {
-        EnsureHttpUri(providerBaseUri);
-        EnsureHttpUri(requestUri);
-
-        if (!string.IsNullOrEmpty(providerBaseUri.UserInfo)
-            || !string.IsNullOrEmpty(requestUri.UserInfo)
-            || !string.Equals(providerBaseUri.Scheme, requestUri.Scheme, StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(providerBaseUri.IdnHost, requestUri.IdnHost, StringComparison.OrdinalIgnoreCase)
-            || providerBaseUri.Port != requestUri.Port)
+        if (!IsSameOrigin(providerBaseUri, requestUri))
         {
             throw new HttpRequestException("The provider request URI does not match the configured provider origin.");
         }
+    }
+
+    internal static bool IsSameOrigin(Uri providerBaseUri, Uri requestUri)
+    {
+        EnsureHttpUri(providerBaseUri);
+        EnsureHttpUri(requestUri);
+
+        return string.IsNullOrEmpty(providerBaseUri.UserInfo)
+            && string.IsNullOrEmpty(requestUri.UserInfo)
+            && string.Equals(providerBaseUri.Scheme, requestUri.Scheme, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(providerBaseUri.IdnHost, requestUri.IdnHost, StringComparison.OrdinalIgnoreCase)
+            && providerBaseUri.Port == requestUri.Port;
+    }
+
+    internal static void EnsurePublicRedirectUri(Uri redirectUri)
+    {
+        EnsureHttpUri(redirectUri);
+        if (!string.IsNullOrEmpty(redirectUri.UserInfo))
+        {
+            throw new HttpRequestException("The provider redirect URI contains user information.");
+        }
+
+        EnsureAllowedHostName(redirectUri.IdnHost.TrimEnd('.'));
     }
 
     internal static IPAddress[] SelectApprovedAddresses(string host, IEnumerable<IPAddress> addresses)
@@ -87,6 +103,20 @@ internal static class ProviderRedirectPolicy
         return explicitlyConfigured.Length > 0
             ? explicitlyConfigured
             : throw new HttpRequestException("The provider endpoint is not publicly routable or an explicitly configured private-network address.");
+    }
+
+    internal static IPAddress[] SelectPublicAddresses(string host, IEnumerable<IPAddress> addresses)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        ArgumentNullException.ThrowIfNull(addresses);
+
+        host = host.TrimEnd('.');
+        EnsureAllowedHostName(host);
+
+        IPAddress[] publiclyRoutable = addresses.Distinct().Where(IsPublicAddress).ToArray();
+        return publiclyRoutable.Length > 0
+            ? publiclyRoutable
+            : throw new HttpRequestException("The provider redirect endpoint is not publicly routable.");
     }
 
     internal static void EnsureAllowedHostName(string host)
