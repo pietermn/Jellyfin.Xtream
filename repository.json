@@ -8,6 +8,14 @@
     "owner": "pietermn",
     "versions": [
       {
+        "changelog": "**Full Changelog**: https://github.com/pietermn/Jellyfin.Xtream/compare/v0.9.0...v0.9.1",
+        "checksum": "e5026cecde2db3f12b4506e8d78543ab",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.9.1/jelly-xtream_0.9.1.0.zip",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-11T09:40:15Z",
+        "version": "0.9.1.0"
+      },
+      {
         "changelog": "**Full Changelog**: https://github.com/pietermn/Jellyfin.Xtream/compare/v0.8.12...v0.9.0",
         "checksum": "0bff8bd3e8fc324e9fafda7e0117a876",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.9.0/jelly-xtream_0.9.0.0.zip",
