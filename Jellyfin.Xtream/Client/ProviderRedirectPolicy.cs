@@ -76,6 +76,7 @@ internal static class ProviderRedirectPolicy
             || host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
             || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)
             || host.EndsWith(".local", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".home.arpa", StringComparison.OrdinalIgnoreCase)
             || !host.Contains('.', StringComparison.Ordinal);
         if (!explicitLocalOrigin)
         {

@@ -49,10 +49,10 @@ Optional scopes make a rule apply only where intended:
 ```text
 [LiveChannel] ^(?:NL|BE)[|:]\s* =>
 [LiveProgram] \s+\(Replay\)$ =>
-[Vod,Series,Episode,Filesystem] \s+\[(?:4K|FHD|HD)\]$ =>
+[Vod,Series,Episode] \s+\[(?:4K|FHD|HD)\]$ =>
 ```
 
-Supported scopes are `LiveChannel`, `LiveProgram`, `Category`, `Vod`, `Series`, `Season`, `Episode`, and `Filesystem`. Invalid expressions are skipped and logged. Rules use a timeout so a pathological expression cannot stall a guide refresh or STRM export. A manual Live TV name override is always the final display name.
+Supported scopes are `LiveChannel`, `LiveProgram`, `Category`, `Vod`, `Series`, `Season`, `Episode`, and `Filesystem`. A VOD, series, or episode rule also applies to that content's STRM filename; use `Filesystem` for a rule that applies to every exported path. Invalid expressions are skipped and logged. Rules use a timeout so a pathological expression cannot stall a guide refresh or STRM export. A manual Live TV name override is always the final display name.
 
 ### Live TV
 
@@ -97,6 +97,8 @@ Before the first v0.9 export, use the `v0.8 STRM credential cleanup` controls on
 If the Jellyfin server is behind a reverse proxy, set Jellyfin's Published Server URL or the plugin's optional `Public Jellyfin URL`. The plugin override takes precedence and is embedded in playback and STRM links; it must be an absolute HTTP(S) URL without credentials, query, or fragment.
 
 ## Troubleshooting
+
+After upgrading, Jellyfin must load one Jellyfin.Xtream version only. Do not leave manually copied `Jelly Xtream_0.8.*` plugin directories beside the installed v0.9 plugin: side-by-side assemblies create duplicate API routes and can cause cross-assembly `PluginConfiguration` cast failures. Preserve the configuration file, remove or disable obsolete plugin copies, then restart Jellyfin before saving the v0.9 configuration.
 
 Make sure you have correctly configured your [Jellyfin networking](https://jellyfin.org/docs/general/networking/):
 

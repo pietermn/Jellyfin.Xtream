@@ -85,6 +85,7 @@ public sealed class StrmProxyController(
             string playbackUrl = urlBuilder.BuildPlayback(
                 connection,
                 configurationFingerprint,
+                configuration.PublicServerUrl,
                 type,
                 id,
                 extension,

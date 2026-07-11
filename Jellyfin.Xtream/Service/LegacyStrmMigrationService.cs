@@ -64,21 +64,29 @@ public sealed partial class LegacyStrmMigrationService(ILogger<LegacyStrmMigrati
         LegacyStrmExportKind kind,
         CancellationToken cancellationToken)
     {
-        PluginConfiguration configuration = Plugin.Instance.Configuration;
-        LegacyStrmMigrationPreview preview = await PreviewRootAsync(
-            GetConfiguredRoot(configuration, kind),
-            kind,
-            cancellationToken).ConfigureAwait(false);
-        DateTimeOffset expiresUtc = DateTimeOffset.UtcNow.Add(_previewLifetime);
-        Guid previewId = Guid.NewGuid();
-        RemoveExpiredAndSupersededPreviews(kind);
-        LegacyStrmMigrationPreview identified = preview with
+        await _migrationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            PreviewId = previewId,
-            ExpiresUtc = expiresUtc,
-        };
-        _previews[previewId] = new(identified, expiresUtc);
-        return identified;
+            PluginConfiguration configuration = Plugin.Instance.Configuration;
+            LegacyStrmMigrationPreview preview = await PreviewRootAsync(
+                GetConfiguredRoot(configuration, kind),
+                kind,
+                cancellationToken).ConfigureAwait(false);
+            DateTimeOffset expiresUtc = DateTimeOffset.UtcNow.Add(_previewLifetime);
+            Guid previewId = Guid.NewGuid();
+            RemoveExpiredAndSupersededPreviews(kind);
+            LegacyStrmMigrationPreview identified = preview with
+            {
+                PreviewId = previewId,
+                ExpiresUtc = expiresUtc,
+            };
+            _previews[previewId] = new(identified, expiresUtc);
+            return identified;
+        }
+        finally
+        {
+            _migrationGate.Release();
+        }
     }
 
     /// <summary>

@@ -18,6 +18,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Net;
 using Jellyfin.Xtream.Client;
+using Jellyfin.Xtream.Configuration;
 using MediaBrowser.Controller;
 using Microsoft.AspNetCore.WebUtilities;
 
@@ -51,9 +52,11 @@ public sealed class StreamProxyUrlBuilder(
         DateTime? start = null,
         int durationMinutes = 0)
     {
+        PluginConfiguration configuration = Plugin.Instance.Configuration;
         return BuildPlayback(
             connection,
-            StreamProxyConfigurationFingerprint.Create(Plugin.Instance.Configuration),
+            StreamProxyConfigurationFingerprint.Create(configuration),
+            configuration.PublicServerUrl,
             type,
             id,
             extension,
@@ -66,6 +69,7 @@ public sealed class StreamProxyUrlBuilder(
     /// </summary>
     /// <param name="connection">The captured provider connection.</param>
     /// <param name="configurationFingerprint">The captured selection/export fingerprint.</param>
+    /// <param name="publicServerUrl">The captured optional public Jellyfin URL.</param>
     /// <param name="type">The stream type.</param>
     /// <param name="id">The provider stream identifier.</param>
     /// <param name="extension">The optional container extension.</param>
@@ -75,6 +79,7 @@ public sealed class StreamProxyUrlBuilder(
     internal string BuildPlayback(
         ConnectionInfo connection,
         string configurationFingerprint,
+        string? publicServerUrl,
         StreamType type,
         int id,
         string? extension = null,
@@ -102,9 +107,7 @@ public sealed class StreamProxyUrlBuilder(
             ["expires"] = grant.ExpiresAtUnixSeconds?.ToString(CultureInfo.InvariantCulture),
             ["signature"] = grant.Signature,
         };
-        string serverUrl = PublicServerUrlPolicy.Resolve(
-            Plugin.Instance.Configuration.PublicServerUrl,
-            applicationHost.GetSmartApiUrl(IPAddress.Any));
+        string serverUrl = ResolvePublicServerUrl(publicServerUrl);
         return QueryHelpers.AddQueryString(serverUrl + PlaybackPath, query);
     }
 
@@ -113,6 +116,7 @@ public sealed class StreamProxyUrlBuilder(
     /// </summary>
     /// <param name="connection">The provider connection.</param>
     /// <param name="configurationFingerprint">The selection fingerprint captured for this export run.</param>
+    /// <param name="publicServerUrl">The public Jellyfin URL captured for this export run.</param>
     /// <param name="type">The stream type.</param>
     /// <param name="id">The provider stream identifier.</param>
     /// <param name="extension">The optional container extension.</param>
@@ -122,6 +126,7 @@ public sealed class StreamProxyUrlBuilder(
     public string BuildPersistentStrm(
         ConnectionInfo connection,
         string configurationFingerprint,
+        string? publicServerUrl,
         StreamType type,
         int id,
         string? extension = null,
@@ -148,9 +153,14 @@ public sealed class StreamProxyUrlBuilder(
             ["keyId"] = grant.KeyId,
             ["signature"] = grant.Signature,
         };
-        string serverUrl = PublicServerUrlPolicy.Resolve(
-            Plugin.Instance.Configuration.PublicServerUrl,
-            applicationHost.GetSmartApiUrl(IPAddress.Any));
+        string serverUrl = ResolvePublicServerUrl(publicServerUrl);
         return QueryHelpers.AddQueryString(serverUrl + PersistentStrmPath, query);
+    }
+
+    private string ResolvePublicServerUrl(string? publicServerUrl)
+    {
+        return PublicServerUrlPolicy.Resolve(
+            publicServerUrl,
+            applicationHost.GetSmartApiUrl(IPAddress.Any));
     }
 }

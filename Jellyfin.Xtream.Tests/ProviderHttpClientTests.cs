@@ -219,6 +219,23 @@ public class ProviderHttpClientTests
         Assert.All(handler.ApprovedAddresses, addresses => Assert.Equal(new[] { IPAddress.Parse("192.168.1.20") }, addresses));
     }
 
+    [Fact]
+    public async Task ExplicitHomeArpaProviderOriginCanUseAPrivateAddress()
+    {
+        using SequenceHandler handler = new(_ => new HttpResponseMessage(HttpStatusCode.OK));
+        using ProviderHttpClient client = CreateClient(handler, IPAddress.Parse("192.168.1.20"));
+        using HttpRequestMessage request = new(HttpMethod.Get, "http://iptv.home.arpa/live/user/password/1.ts");
+
+        using HttpResponseMessage response = await client.SendAsync(
+            request,
+            new Uri("http://iptv.home.arpa/"),
+            HttpCompletionOption.ResponseHeadersRead,
+            CancellationToken.None);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal([IPAddress.Parse("192.168.1.20")], Assert.Single(handler.ApprovedAddresses));
+    }
+
     [Theory]
     [InlineData("http://169.254.169.254/latest/meta-data/")]
     [InlineData("http://100.100.100.200/latest/meta-data/")]

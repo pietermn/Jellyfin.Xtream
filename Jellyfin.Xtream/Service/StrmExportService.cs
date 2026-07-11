@@ -182,6 +182,7 @@ public class StrmExportService(
                 string url = streamProxyUrlBuilder.BuildPersistentStrm(
                     snapshot.ConnectionInfo,
                     snapshot.ConfigurationFingerprint,
+                    snapshot.PublicServerUrl,
                     StreamType.Vod,
                     stream.StreamId,
                     stream.ContainerExtension);
@@ -373,6 +374,7 @@ public class StrmExportService(
             string url = streamProxyUrlBuilder.BuildPersistentStrm(
                 snapshot.ConnectionInfo,
                 snapshot.ConfigurationFingerprint,
+                snapshot.PublicServerUrl,
                 StreamType.Series,
                 episode.EpisodeId,
                 episode.ContainerExtension);
@@ -468,6 +470,7 @@ public class StrmExportService(
         private ExportRunSnapshot(
             ConnectionInfo connectionInfo,
             string configurationFingerprint,
+            string publicServerUrl,
             string? vodRoot,
             string? seriesRoot,
             IReadOnlyList<CategorySelection> vodSelections,
@@ -475,6 +478,7 @@ public class StrmExportService(
         {
             ConnectionInfo = connectionInfo;
             ConfigurationFingerprint = configurationFingerprint;
+            PublicServerUrl = publicServerUrl;
             VodRoot = vodRoot;
             SeriesRoot = seriesRoot;
             VodSelections = vodSelections;
@@ -484,6 +488,8 @@ public class StrmExportService(
         public ConnectionInfo ConnectionInfo { get; }
 
         public string ConfigurationFingerprint { get; }
+
+        public string PublicServerUrl { get; }
 
         public string? VodRoot { get; }
 
@@ -508,10 +514,12 @@ public class StrmExportService(
                 : "https://example.invalid";
             string username = configuration.Username;
             string password = configuration.Password;
+            string publicServerUrl = configuration.PublicServerUrl;
 
             return new(
                 new ConnectionInfo(baseUrl, username, password),
                 StreamProxyConfigurationFingerprint.Create(configuration),
+                publicServerUrl,
                 vodRoot,
                 seriesRoot,
                 CaptureSelections(configuration.Vod),
