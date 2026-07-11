@@ -17,7 +17,6 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
-using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Xtream.Client;
@@ -39,14 +38,14 @@ namespace Jellyfin.Xtream;
 /// Initializes a new instance of the <see cref="LiveTvService"/> class.
 /// </remarks>
 /// <param name="appHost">Instance of the <see cref="IServerApplicationHost"/> interface.</param>
-/// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
+/// <param name="providerHttpClient">The credential-safe provider HTTP client.</param>
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
 /// <param name="memoryCache">Instance of the <see cref="IMemoryCache"/> interface.</param>
 /// <param name="xtreamClient">Instance of the <see cref="IXtreamClient"/> interface.</param>
 /// <param name="nameNormalizer">Instance of the <see cref="NameNormalizationService"/> class.</param>
 public class LiveTvService(
     IServerApplicationHost appHost,
-    IHttpClientFactory httpClientFactory,
+    ProviderHttpClient providerHttpClient,
     ILogger<LiveTvService> logger,
     IMemoryCache memoryCache,
     IXtreamClient xtreamClient,
@@ -132,20 +131,16 @@ public class LiveTvService(
     public async Task<List<MediaSourceInfo>> GetChannelStreamMediaSources(string channelId, CancellationToken cancellationToken)
     {
         MediaSourceInfo source = await GetChannelStream(channelId, string.Empty, cancellationToken).ConfigureAwait(false);
-        return [source];
+        return [RequireOpening(source)];
     }
 
     /// <inheritdoc />
-    public Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
+    public async Task<MediaSourceInfo> GetChannelStream(string channelId, string streamId, CancellationToken cancellationToken)
     {
-        Guid guid = Guid.Parse(channelId);
-        StreamService.FromGuid(guid, out int prefix, out int channel, out int _, out int _);
-        if (prefix != StreamService.LiveTvPrefix)
-        {
-            throw new ArgumentException("Unsupported channel", nameof(channelId));
-        }
+        int channel = DecodeChannelId(channelId);
+        await Plugin.Instance.StreamService.EnsureLiveStreamAuthorizedAsync(channel, cancellationToken).ConfigureAwait(false);
 
-        return Task.FromResult(Plugin.Instance.StreamService.GetMediaSourceInfo(StreamType.Live, channel));
+        return Plugin.Instance.StreamService.GetMediaSourceInfo(StreamType.Live, channel);
     }
 
     /// <inheritdoc />
@@ -171,12 +166,8 @@ public class LiveTvService(
     /// <inheritdoc />
     public async Task<IEnumerable<ProgramInfo>> GetProgramsAsync(string channelId, DateTime startDateUtc, DateTime endDateUtc, CancellationToken cancellationToken)
     {
-        Guid guid = Guid.Parse(channelId);
-        StreamService.FromGuid(guid, out int prefix, out int streamId, out int _, out int _);
-        if (prefix != StreamService.LiveTvPrefix)
-        {
-            throw new ArgumentException("Unsupported channel");
-        }
+        int streamId = DecodeChannelId(channelId);
+        await Plugin.Instance.StreamService.EnsureLiveStreamAuthorizedAsync(streamId, cancellationToken).ConfigureAwait(false);
 
         NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         string key = $"xtream-epg-{channelId}-names-{names.Version.ToString(CultureInfo.InvariantCulture)}";
@@ -226,12 +217,8 @@ public class LiveTvService(
     /// <inheritdoc />
     public async Task<ILiveStream> GetChannelStreamWithDirectStreamProvider(string channelId, string streamId, List<ILiveStream> currentLiveStreams, CancellationToken cancellationToken)
     {
-        Guid guid = Guid.Parse(channelId);
-        StreamService.FromGuid(guid, out int prefix, out int channel, out int _, out int _);
-        if (prefix != StreamService.LiveTvPrefix)
-        {
-            throw new ArgumentException("Unsupported channel");
-        }
+        int channel = DecodeChannelId(channelId);
+        await Plugin.Instance.StreamService.EnsureLiveStreamAuthorizedAsync(channel, cancellationToken).ConfigureAwait(false);
 
         Plugin plugin = Plugin.Instance;
         MediaSourceInfo mediaSourceInfo = plugin.StreamService.GetMediaSourceInfo(StreamType.Live, channel, restream: true);
@@ -242,11 +229,35 @@ public class LiveTvService(
 
         if (stream == null)
         {
-            stream = new Restream(appHost, httpClientFactory, logger, mediaSourceInfo);
+            stream = new Restream(appHost, providerHttpClient, logger, mediaSourceInfo);
             await stream.Open(cancellationToken).ConfigureAwait(false);
         }
 
         stream.ConsumerCount++;
         return stream;
+    }
+
+    internal static MediaSourceInfo RequireOpening(MediaSourceInfo source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        source.RequiresOpening = true;
+        source.RequiresClosing = true;
+        return source;
+    }
+
+    private static int DecodeChannelId(string channelId)
+    {
+        if (!Guid.TryParse(channelId, out Guid guid))
+        {
+            throw new ArgumentException("Unsupported channel", nameof(channelId));
+        }
+
+        StreamService.FromGuid(guid, out int prefix, out int channel, out int reserved1, out int reserved2);
+        if (prefix != StreamService.LiveTvPrefix || channel <= 0 || reserved1 != 0 || reserved2 != 0)
+        {
+            throw new ArgumentException("Unsupported channel", nameof(channelId));
+        }
+
+        return channel;
     }
 }

@@ -14,6 +14,7 @@ export default function (view) {
       view.querySelector('#Username').value = config.Username;
       view.querySelector('#Password').value = config.Password;
       view.querySelector('#UserAgent').value = config.UserAgent;
+      view.querySelector('#PublicServerUrl').value = config.PublicServerUrl || '';
       view.querySelector('#NameCleanupRules').value = config.NameCleanupRules || '';
       Dashboard.hideLoadingMsg();
     });
@@ -52,22 +53,57 @@ export default function (view) {
       view.querySelector('#UserAgent').value = navigator.userAgent;
     };
 
+    const proxyKeyStatus = view.querySelector('#ProxyKeyStatus');
+    const rotateProxyKey = (path, confirmation, success) => {
+      if (!window.confirm(confirmation)) {
+        return;
+      }
+
+      Dashboard.showLoadingMsg();
+      ApiClient.fetch({
+        type: 'POST',
+        url: ApiClient.getUrl(`Plugins/JellyfinXtream/v1/ProxyKeys/${path}`),
+      }).then(() => {
+        proxyKeyStatus.textContent = success;
+      }).catch((error) => {
+        console.error('Failed to rotate Jellyfin.Xtream proxy key:', error);
+        proxyKeyStatus.textContent = 'Revocation failed. Check the server log.';
+      }).finally(() => Dashboard.hideLoadingMsg());
+    };
+    view.querySelector('#RotatePlaybackKey').onclick = () => rotateProxyKey(
+      'Playback/Rotate',
+      'Revoke all currently issued playback links? Active playback may stop.',
+      'All previously issued playback links have been revoked.'
+    );
+    view.querySelector('#RotateStrmKey').onclick = () => rotateProxyKey(
+      'PersistentStrm/Rotate',
+      'Revoke all exported STRM links and queue enabled exports for regeneration?',
+      'All previous STRM grants were revoked. Enabled exports were queued for regeneration.'
+    );
+
     view.querySelector('#XtreamCredentialsForm').onsubmit = (e) => {
+      e.preventDefault();
       Dashboard.showLoadingMsg();
 
-      ApiClient.getPluginConfiguration(pluginId).then((config) => {
-        config.BaseUrl = view.querySelector('#BaseUrl').value;
-        config.Username = view.querySelector('#Username').value;
-        config.Password = view.querySelector('#Password').value;
-        config.UserAgent = view.querySelector('#UserAgent').value;
-        config.NameCleanupRules = view.querySelector('#NameCleanupRules').value;
-        ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
+      ApiClient.getPluginConfiguration(pluginId)
+        .then((config) => {
+          config.BaseUrl = view.querySelector('#BaseUrl').value;
+          config.Username = view.querySelector('#Username').value;
+          config.Password = view.querySelector('#Password').value;
+          config.UserAgent = view.querySelector('#UserAgent').value;
+          config.PublicServerUrl = view.querySelector('#PublicServerUrl').value;
+          config.NameCleanupRules = view.querySelector('#NameCleanupRules').value;
+          return ApiClient.updatePluginConfiguration(pluginId, config);
+        })
+        .then((result) => {
           reloadStatus();
           Dashboard.processPluginConfigurationUpdateResult(result);
+        })
+        .catch((error) => {
+          console.error('Failed to save Jellyfin.Xtream credentials:', error);
+          Dashboard.hideLoadingMsg();
         });
-      });
 
-      e.preventDefault();
       return false;
     };
   }));

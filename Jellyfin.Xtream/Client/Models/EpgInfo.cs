@@ -15,7 +15,6 @@
 
 using System;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 #pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
@@ -35,14 +34,15 @@ public class EpgInfo
     [JsonProperty("lang")]
     public string Language { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("start_timestamp")]
     public DateTime Start { get; set; }
 
     [JsonProperty("start")]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     public DateTime StartLocalTime { get; set; }
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("stop_timestamp")]
     public DateTime End { get; set; }
 

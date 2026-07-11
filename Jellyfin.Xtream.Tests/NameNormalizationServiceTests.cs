@@ -28,6 +28,21 @@ public class NameNormalizationServiceTests
     }
 
     [Fact]
+    public void ExportNamesApplyBothContentAndFilesystemScopesOnce()
+    {
+        NameNormalizationService service = CreateService();
+        Assert.Empty(service.UpdateRules("[Vod] ^VOD\\s*=>\n[Filesystem] \\s*FS$ =>"));
+        NameNormalizationSnapshot snapshot = service.CreateSnapshot();
+
+        Assert.Equal(
+            "Title",
+            StrmExportService.NormalizeExportTitle(snapshot, "VOD Title FS", NameScope.Vod));
+        Assert.Equal(
+            "VOD Title",
+            StrmExportService.NormalizeExportTitle(snapshot, "VOD Title FS", NameScope.Series));
+    }
+
+    [Fact]
     public void CharacterClassAtStartRemainsALegacyRegex()
     {
         NameNormalizationService service = CreateService();

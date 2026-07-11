@@ -16,7 +16,6 @@
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 #pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
@@ -33,18 +32,18 @@ public class SeriesInfo
     public string Plot { get; set; } = string.Empty;
 
     [JsonProperty("cast")]
-    public string Cast { get; set; } = string.Empty;
+    public string? Cast { get; set; }
 
     [JsonProperty("director")]
     public string Director { get; set; } = string.Empty;
 
     [JsonProperty("genre")]
-    public string Genre { get; set; } = string.Empty;
+    public string? Genre { get; set; }
 
     // [JsonProperty("releaseDate")]
     // public long ReleaseDate { get; set; }
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("last_modified")]
     public DateTime LastModified { get; set; }
 

@@ -10,38 +10,47 @@ export default function (view) {
 
     const getConfig = ApiClient.getPluginConfiguration(pluginId);
     const visible = view.querySelector("#Visible");
-    getConfig.then((config) => visible.checked = config.IsVodVisible);
     const tmdbOverride = view.querySelector("#TmdbOverride");
-    getConfig.then((config) => tmdbOverride.checked = config.IsTmdbVodOverride);
     const strmExportEnabled = view.querySelector("#StrmExportEnabled");
-    getConfig.then((config) => strmExportEnabled.checked = config.IsVodStrmExportEnabled);
     const strmExportPath = view.querySelector("#StrmExportPath");
-    getConfig.then((config) => strmExportPath.value = config.VodStrmExportPath || '');
+    let selectionData;
+    getConfig.then((config) => {
+      visible.checked = config.IsVodVisible;
+      tmdbOverride.checked = config.IsTmdbVodOverride;
+      strmExportEnabled.checked = config.IsVodStrmExportEnabled;
+      strmExportPath.value = config.VodStrmExportPath || '';
+      selectionData = config.Vod;
+    });
+    view.querySelector('#XtreamVodForm').onsubmit = (e) => {
+      e.preventDefault();
+      Dashboard.showLoadingMsg();
+      ApiClient.getPluginConfiguration(pluginId)
+        .then((config) => {
+          config.IsVodVisible = visible.checked;
+          config.IsTmdbVodOverride = tmdbOverride.checked;
+          config.IsVodStrmExportEnabled = strmExportEnabled.checked;
+          config.VodStrmExportPath = strmExportPath.value;
+          if (selectionData !== undefined) {
+            config.Vod = selectionData;
+          }
+
+          return ApiClient.updatePluginConfiguration(pluginId, config);
+        })
+        .then((result) => Dashboard.processPluginConfigurationUpdateResult(result))
+        .catch((error) => {
+          console.error('Failed to save VOD settings:', error);
+          Dashboard.hideLoadingMsg();
+        });
+      return false;
+    };
+    Xtream.setupLegacyStrmMigration(view, 'vod');
     const table = view.querySelector('#VodContent');
     Xtream.populateCategoriesTable(
       table,
       () => getConfig.then((config) => config.Vod),
       () => Xtream.fetchJson('Plugins/JellyfinXtream/v1/VodCategories'),
       (categoryId) => Xtream.fetchJson(`Plugins/JellyfinXtream/v1/VodCategories/${categoryId}`),
-    ).then((data) => {
-      view.querySelector('#XtreamVodForm').onsubmit = (e) => {
-        Dashboard.showLoadingMsg();
-
-        ApiClient.getPluginConfiguration(pluginId).then((config) => {
-          config.IsVodVisible = visible.checked;
-          config.IsTmdbVodOverride = tmdbOverride.checked;
-          config.IsVodStrmExportEnabled = strmExportEnabled.checked;
-          config.VodStrmExportPath = strmExportPath.value;
-          config.Vod = data;
-          ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
-            Dashboard.processPluginConfigurationUpdateResult(result);
-          });
-        });
-
-        e.preventDefault();
-        return false;
-      };
-    }).catch((error) => {
+    ).then((data) => selectionData = data).catch((error) => {
       console.error('Failed to load VOD categories:', error);
       Dashboard.hideLoadingMsg();
       table.innerHTML = '';

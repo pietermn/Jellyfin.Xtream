@@ -50,7 +50,7 @@ public class EpisodeDictionaryConverter : JsonConverter
             case JTokenType.Null:
                 return new Dictionary<int, ICollection<Episode>>();
             default:
-                throw new JsonReaderException("The JsonReader points to an unexpected point.");
+                return new Dictionary<int, ICollection<Episode>>();
         }
     }
 
@@ -108,7 +108,7 @@ public class EpisodeDictionaryConverter : JsonConverter
             JTokenType.Array => token.Children().SelectMany(child => ReadEpisodes(child, serializer)).ToList(),
             JTokenType.Object => token.ToObject<Episode>(serializer) is Episode episode ? [episode] : [],
             JTokenType.Null => [],
-            _ => throw new JsonReaderException("The JsonReader points to an unexpected point."),
+            _ => [],
         };
     }
 }

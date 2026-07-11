@@ -10,29 +10,37 @@ export default function (view) {
 
     const getConfig = ApiClient.getPluginConfiguration(pluginId);
     const visible = view.querySelector("#Visible");
-    getConfig.then((config) => visible.checked = config.IsCatchupVisible);
+    let selectionData;
+    getConfig.then((config) => {
+      visible.checked = config.IsCatchupVisible;
+      selectionData = config.LiveTv;
+    });
+    view.querySelector('#XtreamLiveForm').onsubmit = (e) => {
+      e.preventDefault();
+      Dashboard.showLoadingMsg();
+      ApiClient.getPluginConfiguration(pluginId)
+        .then((config) => {
+          config.IsCatchupVisible = visible.checked;
+          if (selectionData !== undefined) {
+            config.LiveTv = selectionData;
+          }
+
+          return ApiClient.updatePluginConfiguration(pluginId, config);
+        })
+        .then((result) => Dashboard.processPluginConfigurationUpdateResult(result))
+        .catch((error) => {
+          console.error('Failed to save Live TV settings:', error);
+          Dashboard.hideLoadingMsg();
+        });
+      return false;
+    };
     const table = view.querySelector('#LiveContent');
     Xtream.populateCategoriesTable(
       table,
       () => getConfig.then((config) => config.LiveTv),
       () => Xtream.fetchJson('Plugins/JellyfinXtream/v1/LiveCategories'),
       (categoryId) => Xtream.fetchJson(`Plugins/JellyfinXtream/v1/LiveCategories/${categoryId}`),
-    ).then((data) => {
-      view.querySelector('#XtreamLiveForm').onsubmit = (e) => {
-        Dashboard.showLoadingMsg();
-
-        ApiClient.getPluginConfiguration(pluginId).then((config) => {
-          config.IsCatchupVisible = visible.checked;
-          config.LiveTv = data;
-          ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
-            Dashboard.processPluginConfigurationUpdateResult(result);
-          });
-        });
-
-        e.preventDefault();
-        return false;
-      };
-    }).catch((error) => {
+    ).then((data) => selectionData = data).catch((error) => {
       console.error('Failed to load Live TV categories:', error);
       Dashboard.hideLoadingMsg();
       table.innerHTML = '';

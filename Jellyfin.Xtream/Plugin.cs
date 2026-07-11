@@ -135,6 +135,11 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     /// <inheritdoc />
     public override void UpdateConfiguration(BasePluginConfiguration configuration)
     {
+        if (configuration is PluginConfiguration pluginConfiguration)
+        {
+            PublicServerUrlPolicy.ValidateOptional(pluginConfiguration.PublicServerUrl);
+        }
+
         base.UpdateConfiguration(configuration);
         _ = NameNormalizer.UpdateRules(Configuration.NameCleanupRules);
 

@@ -106,11 +106,6 @@ public class StreamService(
         return Plugin.Instance.NameNormalizer.Normalize(name, NameScope.Filesystem);
     }
 
-    private bool IsConfigured(SerializableDictionary<int, HashSet<int>> config, int category, int id)
-    {
-        return config.TryGetValue(category, out var values) && (values.Count == 0 || values.Contains(id));
-    }
-
     /// <summary>
     /// Gets an async iterator for the configured channels.
     /// </summary>
@@ -121,7 +116,9 @@ public class StreamService(
         PluginConfiguration config = Plugin.Instance.Configuration;
 
         IEnumerable<StreamInfo> streams = await xtreamClient.GetLiveStreamsAsync(Plugin.Instance.Creds, cancellationToken).ConfigureAwait(false);
-        return streams.Where((StreamInfo channel) => channel.CategoryId.HasValue && IsConfigured(config.LiveTv, channel.CategoryId.Value, channel.StreamId));
+        return streams.Where((StreamInfo channel) =>
+            channel.CategoryId.HasValue
+            && StreamAuthorization.IsItemSelected(config.LiveTv, channel.CategoryId.Value, channel.StreamId));
     }
 
     /// <summary>
@@ -234,7 +231,7 @@ public class StreamService(
 
         List<StreamInfo> streams = await xtreamClient.GetVodStreamsByCategoryAsync(Plugin.Instance.Creds, categoryId, cancellationToken).ConfigureAwait(false);
         return streams
-            .Where((StreamInfo stream) => IsConfigured(Plugin.Instance.Configuration.Vod, categoryId, stream.StreamId))
+            .Where((StreamInfo stream) => StreamAuthorization.IsItemSelected(Plugin.Instance.Configuration.Vod, categoryId, stream.StreamId))
             .GroupBy(stream => stream.StreamId)
             .Select(group => group.First());
     }
@@ -258,14 +255,20 @@ public class StreamService(
     /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
     public async Task<IEnumerable<Series>> GetSeries(int categoryId, CancellationToken cancellationToken)
     {
-        if (!Plugin.Instance.Configuration.Series.ContainsKey(categoryId))
-        {
-            return new List<Series>();
-        }
+        StreamAuthorization.EnsureCategorySelected(Plugin.Instance.Configuration.Series, categoryId, "series category");
 
         List<Series> series = await xtreamClient.GetSeriesByCategoryAsync(Plugin.Instance.Creds, categoryId, cancellationToken).ConfigureAwait(false);
         return series
-            .Where((Series series) => IsConfigured(Plugin.Instance.Configuration.Series, series.CategoryId, series.SeriesId))
+            .Where((Series series) =>
+                (series.CategoryId == 0 || series.CategoryId == categoryId)
+                && StreamAuthorization.IsItemSelected(Plugin.Instance.Configuration.Series, categoryId, series.SeriesId))
+            .Select(series =>
+            {
+                // The category-specific endpoint is authoritative; category_id is optional in
+                // responses from some otherwise compatible Xtream providers.
+                series.CategoryId = categoryId;
+                return series;
+            })
             .GroupBy(series => series.SeriesId)
             .Select(group => group.First());
     }
@@ -273,17 +276,22 @@ public class StreamService(
     /// <summary>
     /// Gets an iterator for the configured seasons in the Series.
     /// </summary>
+    /// <param name="categoryId">The configured category containing the Series.</param>
     /// <param name="seriesId">The Xtream id of the Series.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Tuple<SeriesStreamInfo, int>>> GetSeasons(int seriesId, CancellationToken cancellationToken)
+    public async Task<IEnumerable<Tuple<SeriesStreamInfo, int>>> GetSeasons(
+        int categoryId,
+        int seriesId,
+        CancellationToken cancellationToken)
     {
-        SeriesStreamInfo series = await GetSeriesStreamsBySeriesAsync(seriesId, cancellationToken).ConfigureAwait(false);
-        int categoryId = series.Info.CategoryId;
-        if (!IsConfigured(Plugin.Instance.Configuration.Series, categoryId, seriesId))
-        {
-            return new List<Tuple<SeriesStreamInfo, int>>();
-        }
+        SeriesStreamInfo series = await StreamAuthorization.GetAuthorizedSeriesAsync(
+            xtreamClient,
+            Plugin.Instance.Configuration.Series,
+            Plugin.Instance.Creds,
+            categoryId,
+            seriesId,
+            cancellationToken).ConfigureAwait(false);
 
         return series.Episodes.Keys.Select((int seasonId) => new Tuple<SeriesStreamInfo, int>(series, seasonId));
     }
@@ -291,28 +299,45 @@ public class StreamService(
     /// <summary>
     /// Gets an iterator for the configured seasons in the Series.
     /// </summary>
+    /// <param name="categoryId">The configured category containing the Series.</param>
     /// <param name="seriesId">The Xtream id of the Series.</param>
     /// <param name="seasonId">The Xtream id of the Season.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
     /// <returns>IAsyncEnumerable{StreamInfo}.</returns>
-    public async Task<IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>>> GetEpisodes(int seriesId, int seasonId, CancellationToken cancellationToken)
+    public async Task<IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>>> GetEpisodes(
+        int categoryId,
+        int seriesId,
+        int seasonId,
+        CancellationToken cancellationToken)
     {
-        SeriesStreamInfo series = await GetSeriesStreamsBySeriesAsync(seriesId, cancellationToken).ConfigureAwait(false);
+        SeriesStreamInfo series = await StreamAuthorization.GetAuthorizedSeriesAsync(
+            xtreamClient,
+            Plugin.Instance.Configuration.Series,
+            Plugin.Instance.Creds,
+            categoryId,
+            seriesId,
+            cancellationToken).ConfigureAwait(false);
+        ICollection<Episode> episodes = StreamAuthorization.GetAuthorizedSeason(series, seasonId);
         Season? season = series.Seasons.FirstOrDefault(s => s.SeasonNumber == seasonId || s.SeasonId == seasonId);
-        return series.Episodes[seasonId]
+        return episodes
             .GroupBy(episode => episode.EpisodeId)
             .Select(group => new Tuple<SeriesStreamInfo, Season?, Episode>(series, season, group.First()));
     }
 
     /// <summary>
-    /// Gets all stream information for a series.
+    /// Validates a decoded legacy Live TV id against the configured selection.
     /// </summary>
-    /// <param name="seriesId">The Xtream id of the Series.</param>
+    /// <param name="streamId">The Xtream stream identifier.</param>
     /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The series stream info.</returns>
-    public Task<SeriesStreamInfo> GetSeriesStreamsBySeriesAsync(int seriesId, CancellationToken cancellationToken)
+    /// <returns>A task representing the authorization check.</returns>
+    public Task EnsureLiveStreamAuthorizedAsync(int streamId, CancellationToken cancellationToken)
     {
-        return xtreamClient.GetSeriesStreamsBySeriesAsync(Plugin.Instance.Creds, seriesId, cancellationToken);
+        return StreamAuthorization.EnsureLiveStreamSelectedAsync(
+            xtreamClient,
+            Plugin.Instance.Configuration.LiveTv,
+            Plugin.Instance.Creds,
+            streamId,
+            cancellationToken);
     }
 
     private static void StoreBytes(byte[] dst, int offset, int i)
@@ -397,7 +422,7 @@ public class StreamService(
         ConnectionInfo connection = Plugin.Instance.Creds;
         string uri = restream
             ? StreamUriBuilder.Build(connection, type, id, extension, start, durationMinutes).ToString()
-            : proxyUrlBuilder.Build(connection, type, id, extension, start, durationMinutes);
+            : proxyUrlBuilder.BuildPlayback(connection, type, id, extension, start, durationMinutes);
 
         bool isLive = type == StreamType.Live;
         return new MediaSourceInfo()

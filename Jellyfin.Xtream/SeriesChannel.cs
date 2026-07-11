@@ -104,17 +104,32 @@ public class SeriesChannel(
             StreamService.FromGuid(guid, out int prefix, out int categoryId, out int seriesId, out int seasonId);
             if (prefix == StreamService.SeriesCategoryPrefix)
             {
+                if (seriesId != 0 || seasonId != 0)
+                {
+                    throw new ArgumentException("Malformed series category identifier", nameof(query));
+                }
+
                 return await GetSeries(categoryId, cancellationToken).ConfigureAwait(false);
             }
 
             if (prefix == StreamService.SeriesPrefix)
             {
-                return await GetSeasons(seriesId, cancellationToken).ConfigureAwait(false);
+                if (seriesId <= 0 || seasonId != 0)
+                {
+                    throw new ArgumentException("Malformed series identifier", nameof(query));
+                }
+
+                return await GetSeasons(categoryId, seriesId, cancellationToken).ConfigureAwait(false);
             }
 
             if (prefix == StreamService.SeasonPrefix)
             {
-                return await GetEpisodes(seriesId, seasonId, cancellationToken).ConfigureAwait(false);
+                if (seriesId <= 0)
+                {
+                    throw new ArgumentException("Malformed season identifier", nameof(query));
+                }
+
+                return await GetEpisodes(categoryId, seriesId, seasonId, cancellationToken).ConfigureAwait(false);
             }
         }
         catch (Exception ex)
@@ -148,17 +163,20 @@ public class SeriesChannel(
         };
     }
 
-    private static List<string> GetGenres(string genreString)
+    private static List<string> GetGenres(string? genreString)
     {
-        return new(genreString.Split(',').Select(genre => genre.Trim()));
+        return string.IsNullOrWhiteSpace(genreString)
+            ? []
+            : [.. genreString.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
     }
 
-    private static List<PersonInfo> GetPeople(string cast)
+    private static List<PersonInfo> GetPeople(string? cast)
     {
-        return cast.Split(',').Select(name => new PersonInfo()
-        {
-            Name = name.Trim()
-        }).ToList();
+        return string.IsNullOrWhiteSpace(cast)
+            ? []
+            : cast.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(name => new PersonInfo { Name = name })
+                .ToList();
     }
 
     private static ChannelItemInfo CreateChannelItemInfo(
@@ -207,8 +225,10 @@ public class SeriesChannel(
         SeriesStreamInfo series,
         Season? season,
         Episode episode,
+        int seasonId,
         NameNormalizationSnapshot names)
     {
+        StreamAuthorization.EnsureEpisodeSelected(series, seasonId, episode.EpisodeId);
         Client.Models.SeriesInfo serie = series.Info;
         ParsedName parsedName = names.Normalize(episode.Title, NameScope.Episode);
         string episodeTitle = string.IsNullOrWhiteSpace(parsedName.Title)
@@ -273,9 +293,11 @@ public class SeriesChannel(
         };
     }
 
-    private async Task<ChannelItemResult> GetSeasons(int seriesId, CancellationToken cancellationToken)
+    private async Task<ChannelItemResult> GetSeasons(int categoryId, int seriesId, CancellationToken cancellationToken)
     {
-        IEnumerable<Tuple<SeriesStreamInfo, int>> seasons = await Plugin.Instance.StreamService.GetSeasons(seriesId, cancellationToken).ConfigureAwait(false);
+        IEnumerable<Tuple<SeriesStreamInfo, int>> seasons = await Plugin.Instance.StreamService
+            .GetSeasons(categoryId, seriesId, cancellationToken)
+            .ConfigureAwait(false);
         NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         List<ChannelItemInfo> items = new(
             seasons.Select((Tuple<SeriesStreamInfo, int> tuple) => CreateChannelItemInfo(seriesId, tuple.Item1, tuple.Item2, names)));
@@ -286,12 +308,15 @@ public class SeriesChannel(
         };
     }
 
-    private async Task<ChannelItemResult> GetEpisodes(int seriesId, int seasonId, CancellationToken cancellationToken)
+    private async Task<ChannelItemResult> GetEpisodes(int categoryId, int seriesId, int seasonId, CancellationToken cancellationToken)
     {
-        IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>> episodes = await Plugin.Instance.StreamService.GetEpisodes(seriesId, seasonId, cancellationToken).ConfigureAwait(false);
+        IEnumerable<Tuple<SeriesStreamInfo, Season?, Episode>> episodes = await Plugin.Instance.StreamService
+            .GetEpisodes(categoryId, seriesId, seasonId, cancellationToken)
+            .ConfigureAwait(false);
         NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         List<ChannelItemInfo> items = new List<ChannelItemInfo>(
-            episodes.Select((Tuple<SeriesStreamInfo, Season?, Episode> tuple) => CreateChannelItemInfo(tuple.Item1, tuple.Item2, tuple.Item3, names)));
+            episodes.Select((Tuple<SeriesStreamInfo, Season?, Episode> tuple) =>
+                CreateChannelItemInfo(tuple.Item1, tuple.Item2, tuple.Item3, seasonId, names)));
         return new()
         {
             Items = items,

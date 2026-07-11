@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 
@@ -24,6 +25,10 @@ namespace Jellyfin.Xtream.Client;
 /// </summary>
 public class Base64Converter : JsonConverter
 {
+    private static readonly UTF8Encoding _strictUtf8 = new(
+        encoderShouldEmitUTF8Identifier: false,
+        throwOnInvalidBytes: true);
+
     /// <inheritdoc />
     public override bool CanConvert(Type objectType)
     {
@@ -38,12 +43,24 @@ public class Base64Converter : JsonConverter
             return string.Empty;
         }
 
+        // Plain provider titles can themselves be syntactically valid unpadded Base64
+        // (for example, "Test"). Decode only when the value has an explicit Base64 marker.
+        if (!value.EndsWith('=')
+            && !value.Contains('+', StringComparison.Ordinal)
+            && !value.Contains('/', StringComparison.Ordinal))
+        {
+            return value;
+        }
+
         try
         {
             byte[] bytes = Convert.FromBase64String(value);
-            return Encoding.UTF8.GetString(bytes);
+            string decoded = _strictUtf8.GetString(bytes);
+            return decoded.Any(character => char.IsControl(character) && !char.IsWhiteSpace(character))
+                ? value
+                : decoded;
         }
-        catch (FormatException)
+        catch (Exception ex) when (ex is FormatException or DecoderFallbackException)
         {
             // Some Xtream implementations return plain text despite documenting base64.
             return value;

@@ -24,14 +24,17 @@ using Microsoft.AspNetCore.WebUtilities;
 namespace Jellyfin.Xtream.Service;
 
 /// <summary>
-/// Creates client-safe Jellyfin proxy URLs for Xtream streams.
+/// Creates client-safe Jellyfin proxy and STRM resolver URLs for Xtream streams.
 /// </summary>
-public sealed class StreamProxyUrlBuilder(IServerApplicationHost applicationHost)
+public sealed class StreamProxyUrlBuilder(
+    IServerApplicationHost applicationHost,
+    StreamProxyTokenService tokenService)
 {
-    private const string ProxyPath = "/Plugins/JellyfinXtream/v1/Stream";
+    private const string PlaybackPath = "/Plugins/JellyfinXtream/v1/Stream";
+    private const string PersistentStrmPath = "/Plugins/JellyfinXtream/v1/Strm";
 
     /// <summary>
-    /// Creates a signed proxy URL.
+    /// Creates a short-lived signed playback URL.
     /// </summary>
     /// <param name="connection">The provider connection.</param>
     /// <param name="type">The stream type.</param>
@@ -40,8 +43,38 @@ public sealed class StreamProxyUrlBuilder(IServerApplicationHost applicationHost
     /// <param name="start">The optional catch-up start.</param>
     /// <param name="durationMinutes">The optional catch-up duration.</param>
     /// <returns>The signed Jellyfin proxy URL.</returns>
-    public string Build(
+    public string BuildPlayback(
         ConnectionInfo connection,
+        StreamType type,
+        int id,
+        string? extension = null,
+        DateTime? start = null,
+        int durationMinutes = 0)
+    {
+        return BuildPlayback(
+            connection,
+            StreamProxyConfigurationFingerprint.Create(Plugin.Instance.Configuration),
+            type,
+            id,
+            extension,
+            start,
+            durationMinutes);
+    }
+
+    /// <summary>
+    /// Creates a short-lived playback URL using one already-captured configuration fingerprint.
+    /// </summary>
+    /// <param name="connection">The captured provider connection.</param>
+    /// <param name="configurationFingerprint">The captured selection/export fingerprint.</param>
+    /// <param name="type">The stream type.</param>
+    /// <param name="id">The provider stream identifier.</param>
+    /// <param name="extension">The optional container extension.</param>
+    /// <param name="start">The optional catch-up start.</param>
+    /// <param name="durationMinutes">The optional catch-up duration.</param>
+    /// <returns>The signed Jellyfin proxy URL.</returns>
+    internal string BuildPlayback(
+        ConnectionInfo connection,
+        string configurationFingerprint,
         StreamType type,
         int id,
         string? extension = null,
@@ -50,7 +83,14 @@ public sealed class StreamProxyUrlBuilder(IServerApplicationHost applicationHost
     {
         string normalizedExtension = StreamUriBuilder.NormalizeExtension(extension).TrimStart('.');
         long? startTicks = start?.Ticks;
-        string signature = StreamProxySigner.Sign(connection, type, id, normalizedExtension, startTicks, durationMinutes);
+        StreamProxyGrant grant = tokenService.CreatePlaybackGrant(
+            connection,
+            configurationFingerprint,
+            type,
+            id,
+            normalizedExtension,
+            startTicks,
+            durationMinutes);
         Dictionary<string, string?> query = new(StringComparer.Ordinal)
         {
             ["type"] = ((int)type).ToString(CultureInfo.InvariantCulture),
@@ -58,9 +98,59 @@ public sealed class StreamProxyUrlBuilder(IServerApplicationHost applicationHost
             ["extension"] = normalizedExtension,
             ["startTicks"] = startTicks?.ToString(CultureInfo.InvariantCulture),
             ["duration"] = durationMinutes.ToString(CultureInfo.InvariantCulture),
-            ["signature"] = signature,
+            ["keyId"] = grant.KeyId,
+            ["expires"] = grant.ExpiresAtUnixSeconds?.ToString(CultureInfo.InvariantCulture),
+            ["signature"] = grant.Signature,
         };
-        string serverUrl = applicationHost.GetSmartApiUrl(IPAddress.Any).TrimEnd('/');
-        return QueryHelpers.AddQueryString(serverUrl + ProxyPath, query);
+        string serverUrl = PublicServerUrlPolicy.Resolve(
+            Plugin.Instance.Configuration.PublicServerUrl,
+            applicationHost.GetSmartApiUrl(IPAddress.Any));
+        return QueryHelpers.AddQueryString(serverUrl + PlaybackPath, query);
+    }
+
+    /// <summary>
+    /// Creates a durable signed STRM resolver URL. The resolver mints a new short-lived playback URL.
+    /// </summary>
+    /// <param name="connection">The provider connection.</param>
+    /// <param name="configurationFingerprint">The selection fingerprint captured for this export run.</param>
+    /// <param name="type">The stream type.</param>
+    /// <param name="id">The provider stream identifier.</param>
+    /// <param name="extension">The optional container extension.</param>
+    /// <param name="start">The optional catch-up start.</param>
+    /// <param name="durationMinutes">The optional catch-up duration.</param>
+    /// <returns>The durable Jellyfin STRM resolver URL.</returns>
+    public string BuildPersistentStrm(
+        ConnectionInfo connection,
+        string configurationFingerprint,
+        StreamType type,
+        int id,
+        string? extension = null,
+        DateTime? start = null,
+        int durationMinutes = 0)
+    {
+        string normalizedExtension = StreamUriBuilder.NormalizeExtension(extension).TrimStart('.');
+        long? startTicks = start?.Ticks;
+        StreamProxyGrant grant = tokenService.CreatePersistentStrmGrant(
+            connection,
+            configurationFingerprint,
+            type,
+            id,
+            normalizedExtension,
+            startTicks,
+            durationMinutes);
+        Dictionary<string, string?> query = new(StringComparer.Ordinal)
+        {
+            ["type"] = ((int)type).ToString(CultureInfo.InvariantCulture),
+            ["id"] = id.ToString(CultureInfo.InvariantCulture),
+            ["extension"] = normalizedExtension,
+            ["startTicks"] = startTicks?.ToString(CultureInfo.InvariantCulture),
+            ["duration"] = durationMinutes.ToString(CultureInfo.InvariantCulture),
+            ["keyId"] = grant.KeyId,
+            ["signature"] = grant.Signature,
+        };
+        string serverUrl = PublicServerUrlPolicy.Resolve(
+            Plugin.Instance.Configuration.PublicServerUrl,
+            applicationHost.GetSmartApiUrl(IPAddress.Any));
+        return QueryHelpers.AddQueryString(serverUrl + PersistentStrmPath, query);
     }
 }

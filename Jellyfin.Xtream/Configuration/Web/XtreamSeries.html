@@ -22,6 +22,19 @@
             Folder on the Jellyfin server where series STRM files are written. Add this folder as a normal Shows library in Jellyfin.
           </div>
         </div>
+        <div class="verticalSection">
+          <h3>v0.8 STRM credential cleanup</h3>
+          <p class="fieldDescription">
+            Preview files whose path and direct Xtream URL match a historical plugin export layout. Review every matched path first. Quarantine renames and retains matched files; it never deletes them or changes unrecognized files.
+          </p>
+          <button id="LegacyStrmPreview" is="emby-button" type="button" class="raised emby-button">
+            <span>Preview legacy episode files</span>
+          </button>
+          <button id="LegacyStrmQuarantine" is="emby-button" type="button" class="raised emby-button" disabled>
+            <span>Quarantine matched files</span>
+          </button>
+          <div id="LegacyStrmResult" class="fieldDescription" aria-live="polite"></div>
+        </div>
         <div class="sectionTitleContainer flex align-items-center">
           <h2 class="sectionTitle">Series selection</h2>
         </div>

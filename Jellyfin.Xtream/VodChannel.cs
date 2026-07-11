@@ -19,6 +19,7 @@ using System.Globalization;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Client.Models;
 using Jellyfin.Xtream.Providers;
 using Jellyfin.Xtream.Service;
@@ -119,7 +120,9 @@ public class VodChannel(
 
     private Task<ChannelItemInfo> CreateChannelItemInfo(StreamInfo stream, NameNormalizationSnapshot names)
     {
-        long added = long.Parse(stream.Added, CultureInfo.InvariantCulture);
+        DateTime? dateCreated = TolerantDateTimeConverter.TryParse(stream.Added, out DateTime added)
+            ? added
+            : null;
         ParsedName parsedName = names.Normalize(stream.Name, NameScope.Vod);
 
         List<MediaSourceInfo> sources =
@@ -133,7 +136,7 @@ public class VodChannel(
         ChannelItemInfo result = new ChannelItemInfo()
         {
             ContentType = ChannelMediaContentType.Movie,
-            DateCreated = DateTimeOffset.FromUnixTimeSeconds(added).DateTime,
+            DateCreated = dateCreated,
             Id = $"{StreamService.StreamPrefix}{stream.StreamId}",
             ImageUrl = stream.StreamIcon,
             IsLiveStream = false,

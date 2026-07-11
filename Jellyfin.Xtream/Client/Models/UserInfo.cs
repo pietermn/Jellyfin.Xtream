@@ -16,7 +16,6 @@
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 #pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
@@ -35,7 +34,7 @@ public class UserInfo
     [JsonProperty("status")]
     public string Status { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("exp_date")]
     public DateTime? ExpDate { get; set; }
 
@@ -46,7 +45,7 @@ public class UserInfo
     [JsonProperty("active_cons")]
     public int ActiveCons { get; set; }
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("created_at")]
     public DateTime CreatedAt { get; set; }
 

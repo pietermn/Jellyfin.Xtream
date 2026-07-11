@@ -33,20 +33,35 @@ namespace Jellyfin.Xtream.Client;
 public sealed class CachingXtreamClient : IXtreamClient, IDisposable
 {
     private const long MaxCacheUnits = 4096;
+    private const long MaxCacheEntryUnits = 256;
+    private const long ItemsPerCacheUnit = 100;
     private static readonly TimeSpan _catalogLifetime = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan _detailLifetime = TimeSpan.FromMinutes(30);
     private static readonly TimeSpan _epgLifetime = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan _providerLoadTimeout = TimeSpan.FromMinutes(2);
     private readonly MemoryCache _cache = new(new MemoryCacheOptions { SizeLimit = MaxCacheUnits });
+    private readonly CancellationTokenSource _disposeTokenSource = new();
     private readonly IXtreamClient _inner;
-    private readonly ConcurrentDictionary<string, Lazy<Task<object>>> _pending = new(StringComparer.Ordinal);
+    private readonly TimeSpan _loadTimeout;
+    private readonly ConcurrentDictionary<string, PendingLoad> _pending = new(StringComparer.Ordinal);
+    private int _disposeState;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="CachingXtreamClient"/> class.
     /// </summary>
     /// <param name="inner">The provider client to decorate.</param>
     public CachingXtreamClient(IXtreamClient inner)
+        : this(inner, _providerLoadTimeout)
     {
+    }
+
+    internal CachingXtreamClient(IXtreamClient inner, TimeSpan loadTimeout)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(loadTimeout, TimeSpan.Zero);
+
         _inner = inner;
+        _loadTimeout = loadTimeout;
     }
 
     /// <inheritdoc />
@@ -128,7 +143,35 @@ public sealed class CachingXtreamClient : IXtreamClient, IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposeState, 1) != 0)
+        {
+            return;
+        }
+
+        _disposeTokenSource.Cancel();
+        foreach (PendingLoad pending in _pending.Values)
+        {
+            pending.Cancel();
+        }
+
         _cache.Dispose();
+        _disposeTokenSource.Dispose();
+    }
+
+    internal static long CalculateCacheUnits(object value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+
+        long itemCount = value switch
+        {
+            EpgListings epg => epg.Listings?.Count ?? 0,
+            SeriesStreamInfo series => CountSeriesGraph(series),
+            ICollection collection => collection.Count,
+            _ => 1,
+        };
+
+        long units = (Math.Min(itemCount, MaxCacheEntryUnits * ItemsPerCacheUnit) + ItemsPerCacheUnit - 1) / ItemsPerCacheUnit;
+        return Math.Clamp(units, 1, MaxCacheEntryUnits);
     }
 
     private static string CreateKey(ConnectionInfo connectionInfo, string operation, int? id = null)
@@ -147,41 +190,248 @@ public sealed class CachingXtreamClient : IXtreamClient, IDisposable
         CancellationToken cancellationToken)
         where T : class
     {
-        if (_cache.TryGetValue(key, out T? cached) && cached is not null)
+        cancellationToken.ThrowIfCancellationRequested();
+
+        while (true)
         {
-            return cached;
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposeState) != 0, this);
+            if (_cache.TryGetValue(key, out T? cached) && cached is not null)
+            {
+                return cached;
+            }
+
+            if (!_pending.TryGetValue(key, out PendingLoad? pending))
+            {
+                PendingLoad candidate = new(
+                    this,
+                    key,
+                    token => LoadAndCacheAsync(key, lifetime, factory, token),
+                    _loadTimeout,
+                    _disposeTokenSource.Token);
+                if (!_pending.TryAdd(key, candidate))
+                {
+                    candidate.DisposeUnused();
+                    continue;
+                }
+
+                pending = candidate;
+            }
+
+            if (!pending.TryAcquire(out Task<object> loadTask, out CancellationToken loadCancellationToken))
+            {
+                RemovePending(key, pending);
+                continue;
+            }
+
+            try
+            {
+                object value = await loadTask
+                    .WaitAsync(loadCancellationToken)
+                    .WaitAsync(cancellationToken)
+                    .ConfigureAwait(false);
+                return (T)value;
+            }
+            finally
+            {
+                pending.Release();
+            }
         }
-
-        Lazy<Task<object>> pending = _pending.GetOrAdd(
-            key,
-            _ => new Lazy<Task<object>>(
-                () => LoadAndCacheAsync(key, lifetime, factory),
-                LazyThreadSafetyMode.ExecutionAndPublication));
-
-        object value = await pending.Value.WaitAsync(cancellationToken).ConfigureAwait(false);
-        return (T)value;
     }
 
-    private async Task<object> LoadAndCacheAsync<T>(string key, TimeSpan lifetime, Func<CancellationToken, Task<T>> factory)
+    private async Task<object> LoadAndCacheAsync<T>(
+        string key,
+        TimeSpan lifetime,
+        Func<CancellationToken, Task<T>> factory,
+        CancellationToken cancellationToken)
         where T : class
     {
-        try
-        {
-            T value = await factory(CancellationToken.None).ConfigureAwait(false);
-            MemoryCacheEntryOptions options = new MemoryCacheEntryOptions()
-                .SetAbsoluteExpiration(lifetime)
-                .SetSize(GetCacheUnits(value));
-            _cache.Set(key, value, options);
-            return value;
-        }
-        finally
-        {
-            _pending.TryRemove(key, out _);
-        }
+        T value = await factory(cancellationToken).ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
+        MemoryCacheEntryOptions options = new MemoryCacheEntryOptions()
+            .SetAbsoluteExpiration(lifetime)
+            .SetSize(CalculateCacheUnits(value));
+        _cache.Set(key, value, options);
+        return value;
     }
 
-    private static long GetCacheUnits(object value)
+    private static long CountSeriesGraph(SeriesStreamInfo series)
     {
-        return value is ICollection collection ? Math.Clamp((collection.Count / 100) + 1, 1, 256) : 1;
+        long maximumItems = MaxCacheEntryUnits * ItemsPerCacheUnit;
+        long count = Math.Min(series.Seasons?.Count ?? 0, maximumItems);
+        if (series.Episodes is null)
+        {
+            return count;
+        }
+
+        count = Math.Min(count + series.Episodes.Count, maximumItems);
+        foreach (ICollection<Episode>? episodes in series.Episodes.Values)
+        {
+            count = Math.Min(count + (episodes?.Count ?? 0), maximumItems);
+            if (count >= maximumItems)
+            {
+                break;
+            }
+        }
+
+        return count;
+    }
+
+    private void RemovePending(string key, PendingLoad pending)
+    {
+        ((ICollection<KeyValuePair<string, PendingLoad>>)_pending).Remove(new KeyValuePair<string, PendingLoad>(key, pending));
+    }
+
+    private sealed class PendingLoad
+    {
+        private readonly CancellationTokenSource _cancellationTokenSource;
+        private readonly string _key;
+        private readonly Lazy<Task<object>> _loadTask;
+        private readonly CachingXtreamClient _owner;
+        private readonly object _syncRoot = new();
+        private bool _acceptingWaiters = true;
+        private bool _completed;
+        private bool _disposed;
+        private int _waiterCount;
+
+        public PendingLoad(
+            CachingXtreamClient owner,
+            string key,
+            Func<CancellationToken, Task<object>> factory,
+            TimeSpan timeout,
+            CancellationToken disposeToken)
+        {
+            _owner = owner;
+            _key = key;
+            _cancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(disposeToken);
+            _cancellationTokenSource.CancelAfter(timeout);
+            _loadTask = new Lazy<Task<object>>(
+                () => ExecuteAsync(factory),
+                LazyThreadSafetyMode.ExecutionAndPublication);
+        }
+
+        public bool TryAcquire(out Task<object> task, out CancellationToken loadCancellationToken)
+        {
+            lock (_syncRoot)
+            {
+                if (!_acceptingWaiters || _cancellationTokenSource.IsCancellationRequested)
+                {
+                    _acceptingWaiters = false;
+                    task = null!;
+                    loadCancellationToken = default;
+                    return false;
+                }
+
+                _waiterCount++;
+                task = _loadTask.Value;
+                loadCancellationToken = _cancellationTokenSource.Token;
+                return true;
+            }
+        }
+
+        public void Release()
+        {
+            bool cancel = false;
+            bool dispose = false;
+            lock (_syncRoot)
+            {
+                _waiterCount--;
+                if (_waiterCount == 0)
+                {
+                    if (_completed)
+                    {
+                        dispose = true;
+                    }
+                    else
+                    {
+                        _acceptingWaiters = false;
+                        cancel = true;
+                    }
+                }
+            }
+
+            if (cancel)
+            {
+                _owner.RemovePending(_key, this);
+                CancelTokenSource();
+            }
+
+            if (dispose)
+            {
+                DisposeTokenSource();
+            }
+        }
+
+        public void Cancel()
+        {
+            lock (_syncRoot)
+            {
+                _acceptingWaiters = false;
+            }
+
+            _owner.RemovePending(_key, this);
+            CancelTokenSource();
+        }
+
+        public void DisposeUnused()
+        {
+            lock (_syncRoot)
+            {
+                _acceptingWaiters = false;
+                _completed = true;
+            }
+
+            DisposeTokenSource();
+        }
+
+        private async Task<object> ExecuteAsync(Func<CancellationToken, Task<object>> factory)
+        {
+            try
+            {
+                return await factory(_cancellationTokenSource.Token).ConfigureAwait(false);
+            }
+            finally
+            {
+                bool dispose;
+                lock (_syncRoot)
+                {
+                    _completed = true;
+                    _acceptingWaiters = false;
+                    dispose = _waiterCount == 0;
+                }
+
+                _owner.RemovePending(_key, this);
+                if (dispose)
+                {
+                    DisposeTokenSource();
+                }
+            }
+        }
+
+        private void DisposeTokenSource()
+        {
+            lock (_syncRoot)
+            {
+                if (_disposed)
+                {
+                    return;
+                }
+
+                _disposed = true;
+            }
+
+            _cancellationTokenSource.Dispose();
+        }
+
+        private void CancelTokenSource()
+        {
+            try
+            {
+                _cancellationTokenSource.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // A concurrently completing load already disposed its cancellation source.
+            }
+        }
     }
 }

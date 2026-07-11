@@ -101,6 +101,16 @@ public class CatchupChannel(
 
             Guid guid = Guid.Parse(query.FolderId);
             StreamService.FromGuid(guid, out int prefix, out int categoryId, out int channelId, out int date);
+            if (prefix != StreamService.CatchupPrefix || channelId <= 0)
+            {
+                throw new ArgumentException("Unsupported catch-up channel", nameof(query));
+            }
+
+            StreamAuthorization.EnsureItemSelected(
+                Plugin.Instance.Configuration.LiveTv,
+                categoryId,
+                channelId,
+                "catch-up channel");
 
             if (date == 0)
             {
@@ -151,10 +161,14 @@ public class CatchupChannel(
     private async Task<ChannelItemResult> GetDays(int categoryId, int channelId, CancellationToken cancellationToken)
     {
         Plugin plugin = Plugin.Instance;
+        StreamAuthorization.EnsureItemSelected(
+            plugin.Configuration.LiveTv,
+            categoryId,
+            channelId,
+            "catch-up channel");
 
         List<StreamInfo> streams = await xtreamClient.GetLiveStreamsByCategoryAsync(plugin.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        StreamInfo channel = streams.FirstOrDefault(s => s.StreamId == channelId)
-            ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
+        StreamInfo channel = GetAuthorizedCatchupChannel(streams, categoryId, channelId);
         NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
         ParsedName parsedName = plugin.StreamService.ApplyLiveStreamOverrides(channel, names);
 
@@ -186,10 +200,14 @@ public class CatchupChannel(
         DateTime start = DateTime.UnixEpoch.AddDays(day);
         DateTime end = start.AddDays(1);
         Plugin plugin = Plugin.Instance;
+        StreamAuthorization.EnsureItemSelected(
+            plugin.Configuration.LiveTv,
+            categoryId,
+            channelId,
+            "catch-up channel");
 
         List<StreamInfo> streams = await xtreamClient.GetLiveStreamsByCategoryAsync(plugin.Creds, categoryId, cancellationToken).ConfigureAwait(false);
-        StreamInfo channel = streams.FirstOrDefault(s => s.StreamId == channelId)
-            ?? throw new ArgumentException($"Channel with id {channelId} not found in category {categoryId}");
+        StreamInfo channel = GetAuthorizedCatchupChannel(streams, categoryId, channelId);
         EpgListings epgs = await xtreamClient.GetEpgInfoAsync(plugin.Creds, channelId, cancellationToken).ConfigureAwait(false);
         List<ChannelItemInfo> items = [];
         NameNormalizationSnapshot names = nameNormalizer.CreateSnapshot();
@@ -255,6 +273,18 @@ public class CatchupChannel(
             TotalRecordCount = items.Count
         };
         return result;
+    }
+
+    private static StreamInfo GetAuthorizedCatchupChannel(
+        IEnumerable<StreamInfo> streams,
+        int categoryId,
+        int channelId)
+    {
+        StreamInfo? channel = streams.FirstOrDefault(stream =>
+            stream.StreamId == channelId
+            && stream.CategoryId == categoryId
+            && stream.TvArchive);
+        return channel ?? throw new UnauthorizedAccessException("The requested catch-up channel is unavailable.");
     }
 
     /// <inheritdoc />

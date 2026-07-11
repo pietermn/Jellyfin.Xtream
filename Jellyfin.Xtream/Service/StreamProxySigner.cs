@@ -23,57 +23,97 @@ using Microsoft.AspNetCore.WebUtilities;
 namespace Jellyfin.Xtream.Service;
 
 /// <summary>
-/// Signs opaque proxy URLs so they grant access to one provider stream without revealing credentials.
+/// Signs opaque proxy grants using random server-side key material.
 /// </summary>
 internal static class StreamProxySigner
 {
     /// <summary>
     /// Creates a signature for a proxied stream request.
     /// </summary>
-    /// <param name="connection">The provider connection.</param>
+    /// <param name="key">The random server-side signing key.</param>
+    /// <param name="purpose">The grant purpose.</param>
+    /// <param name="keyId">The identifier for the current signing key.</param>
+    /// <param name="connection">The provider connection to bind the grant to.</param>
+    /// <param name="configurationFingerprint">The current stream-selection fingerprint.</param>
     /// <param name="type">The stream type.</param>
     /// <param name="id">The provider stream identifier.</param>
     /// <param name="extension">The optional container extension.</param>
     /// <param name="startTicks">The optional catch-up start in ticks.</param>
     /// <param name="durationMinutes">The optional catch-up duration.</param>
+    /// <param name="expiresAtUnixSeconds">The optional expiry time.</param>
     /// <returns>The URL-safe signature.</returns>
     public static string Sign(
+        ReadOnlySpan<byte> key,
+        StreamProxyGrantPurpose purpose,
+        string keyId,
         ConnectionInfo connection,
+        string configurationFingerprint,
         StreamType type,
         int id,
         string? extension,
         long? startTicks,
-        int durationMinutes)
+        int durationMinutes,
+        long? expiresAtUnixSeconds)
     {
-        byte[] key = GetKey(connection);
-        byte[] payload = Encoding.UTF8.GetBytes(GetPayload(type, id, extension, startTicks, durationMinutes));
+        byte[] payload = Encoding.UTF8.GetBytes(GetPayload(
+            purpose,
+            keyId,
+            connection,
+            configurationFingerprint,
+            type,
+            id,
+            extension,
+            startTicks,
+            durationMinutes,
+            expiresAtUnixSeconds));
         return WebEncoders.Base64UrlEncode(HMACSHA256.HashData(key, payload));
     }
 
     /// <summary>
     /// Validates a signature for a proxied stream request.
     /// </summary>
-    /// <param name="connection">The provider connection.</param>
+    /// <param name="key">The random server-side signing key.</param>
+    /// <param name="purpose">The grant purpose.</param>
+    /// <param name="keyId">The identifier for the current signing key.</param>
+    /// <param name="connection">The provider connection to bind the grant to.</param>
+    /// <param name="configurationFingerprint">The current stream-selection fingerprint.</param>
     /// <param name="type">The stream type.</param>
     /// <param name="id">The provider stream identifier.</param>
     /// <param name="extension">The optional container extension.</param>
     /// <param name="startTicks">The optional catch-up start in ticks.</param>
     /// <param name="durationMinutes">The optional catch-up duration.</param>
+    /// <param name="expiresAtUnixSeconds">The optional expiry time.</param>
     /// <param name="signature">The supplied signature.</param>
     /// <returns><see langword="true"/> when the signature is valid.</returns>
     public static bool Verify(
+        ReadOnlySpan<byte> key,
+        StreamProxyGrantPurpose purpose,
+        string keyId,
         ConnectionInfo connection,
+        string configurationFingerprint,
         StreamType type,
         int id,
         string? extension,
         long? startTicks,
         int durationMinutes,
+        long? expiresAtUnixSeconds,
         string signature)
     {
         try
         {
             byte[] supplied = WebEncoders.Base64UrlDecode(signature);
-            byte[] expected = WebEncoders.Base64UrlDecode(Sign(connection, type, id, extension, startTicks, durationMinutes));
+            byte[] expected = WebEncoders.Base64UrlDecode(Sign(
+                key,
+                purpose,
+                keyId,
+                connection,
+                configurationFingerprint,
+                type,
+                id,
+                extension,
+                startTicks,
+                durationMinutes,
+                expiresAtUnixSeconds));
             return CryptographicOperations.FixedTimeEquals(supplied, expected);
         }
         catch (FormatException)
@@ -82,15 +122,29 @@ internal static class StreamProxySigner
         }
     }
 
-    private static byte[] GetKey(ConnectionInfo connection)
+    private static string GetConnectionFingerprint(ConnectionInfo connection)
     {
-        return SHA256.HashData(Encoding.UTF8.GetBytes($"{connection.BaseUrl}\0{connection.UserName}\0{connection.Password}"));
+        byte[] value = Encoding.UTF8.GetBytes(string.Create(
+            CultureInfo.InvariantCulture,
+            $"{connection.BaseUrl.Trim().TrimEnd('/')}\0{connection.UserName}\0{connection.Password}"));
+        return WebEncoders.Base64UrlEncode(SHA256.HashData(value));
     }
 
-    private static string GetPayload(StreamType type, int id, string? extension, long? startTicks, int durationMinutes)
+    private static string GetPayload(
+        StreamProxyGrantPurpose purpose,
+        string keyId,
+        ConnectionInfo connection,
+        string configurationFingerprint,
+        StreamType type,
+        int id,
+        string? extension,
+        long? startTicks,
+        int durationMinutes,
+        long? expiresAtUnixSeconds)
     {
+        string normalizedExtension = StreamUriBuilder.NormalizeExtension(extension).TrimStart('.').ToUpperInvariant();
         return string.Create(
             CultureInfo.InvariantCulture,
-            $"{(int)type}:{id}:{extension?.Trim().TrimStart('.').ToUpperInvariant() ?? string.Empty}:{startTicks?.ToString(CultureInfo.InvariantCulture) ?? string.Empty}:{durationMinutes}");
+            $"v1:{purpose}:{keyId}:{GetConnectionFingerprint(connection)}:{configurationFingerprint}:{(int)type}:{id}:{normalizedExtension}:{startTicks?.ToString(CultureInfo.InvariantCulture) ?? string.Empty}:{durationMinutes}:{expiresAtUnixSeconds?.ToString(CultureInfo.InvariantCulture) ?? string.Empty}");
     }
 }

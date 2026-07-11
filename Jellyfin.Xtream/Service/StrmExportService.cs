@@ -130,7 +130,18 @@ public class StrmExportService(
                     snapshot.ConnectionInfo,
                     selection.CategoryId,
                     cancellationToken).ConfigureAwait(false);
-                streamsToExport.AddRange(streams.Where(stream => selection.Includes(stream.StreamId)));
+                foreach (StreamInfo stream in streams.Where(stream => selection.Includes(stream.StreamId)))
+                {
+                    if (stream.StreamId <= 0)
+                    {
+                        hasFailures = true;
+                        logger.LogWarning(
+                            "Skipping a VOD STRM export entry because the provider returned a non-positive stream identifier.");
+                        continue;
+                    }
+
+                    streamsToExport.Add(stream);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -162,14 +173,15 @@ public class StrmExportService(
             cancellationToken.ThrowIfCancellationRequested();
             try
             {
-                string title = namingSnapshot.Normalize(stream.Name, NameScope.Filesystem).Title;
+                string title = NormalizeExportTitle(namingSnapshot, stream.Name, NameScope.Vod);
                 string relativePath = StrmExportPathPolicy.BuildVodRelativePath(
                     title,
                     stream.StreamId,
                     stream.ContainerExtension);
                 string path = StrmExportPathPolicy.ResolveGeneratedPath(rootPath, relativePath);
-                string url = streamProxyUrlBuilder.Build(
+                string url = streamProxyUrlBuilder.BuildPersistentStrm(
                     snapshot.ConnectionInfo,
+                    snapshot.ConfigurationFingerprint,
                     StreamType.Vod,
                     stream.StreamId,
                     stream.ContainerExtension);
@@ -233,7 +245,18 @@ public class StrmExportService(
                     snapshot.ConnectionInfo,
                     selection.CategoryId,
                     cancellationToken).ConfigureAwait(false);
-                seriesToExport.AddRange(seriesItems.Where(series => selection.Includes(series.SeriesId)));
+                foreach (Series series in seriesItems.Where(series => selection.Includes(series.SeriesId)))
+                {
+                    if (series.SeriesId <= 0)
+                    {
+                        hasFailures = true;
+                        logger.LogWarning(
+                            "Skipping a series STRM export entry because the provider returned a non-positive series identifier.");
+                        continue;
+                    }
+
+                    seriesToExport.Add(series);
+                }
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -310,7 +333,7 @@ public class StrmExportService(
         Action<double> progress,
         CancellationToken cancellationToken)
     {
-        string seriesTitle = namingSnapshot.Normalize(series.Name, NameScope.Filesystem).Title;
+        string seriesTitle = NormalizeExportTitle(namingSnapshot, series.Name, NameScope.Series);
         SeriesStreamInfo seriesInfo = await xtreamClient.GetSeriesStreamsBySeriesAsync(
             snapshot.ConnectionInfo,
             series.SeriesId,
@@ -327,13 +350,18 @@ public class StrmExportService(
             .ThenBy(episode => episode.Episode.EpisodeNum)
             .ThenBy(episode => episode.Episode.EpisodeId)
             .ToList();
+        if (episodesToExport.Any(episode => episode.Episode.EpisodeId <= 0))
+        {
+            throw new InvalidDataException(
+                "The provider returned a non-positive episode identifier; this series export was skipped.");
+        }
 
         int episodesProcessed = 0;
         foreach (EpisodeExport episodeExport in episodesToExport)
         {
             cancellationToken.ThrowIfCancellationRequested();
             Episode episode = episodeExport.Episode;
-            string episodeTitle = namingSnapshot.Normalize(episode.Title, NameScope.Filesystem).Title;
+            string episodeTitle = NormalizeExportTitle(namingSnapshot, episode.Title, NameScope.Episode);
             string relativePath = StrmExportPathPolicy.BuildEpisodeRelativePath(
                 seriesTitle,
                 series.SeriesId,
@@ -342,8 +370,9 @@ public class StrmExportService(
                 episodeTitle,
                 episode.EpisodeId);
             string path = StrmExportPathPolicy.ResolveGeneratedPath(rootPath, relativePath);
-            string url = streamProxyUrlBuilder.Build(
+            string url = streamProxyUrlBuilder.BuildPersistentStrm(
                 snapshot.ConnectionInfo,
+                snapshot.ConfigurationFingerprint,
                 StreamType.Series,
                 episode.EpisodeId,
                 episode.ContainerExtension);
@@ -368,6 +397,15 @@ public class StrmExportService(
 
         progress(100);
         return episodesToExport.Count;
+    }
+
+    internal static string NormalizeExportTitle(
+        NameNormalizationSnapshot namingSnapshot,
+        string? title,
+        NameScope contentScope)
+    {
+        ArgumentNullException.ThrowIfNull(namingSnapshot);
+        return namingSnapshot.Normalize(title, contentScope | NameScope.Filesystem).Title;
     }
 
     private async Task ReconcileIfSafeAsync(
@@ -429,12 +467,14 @@ public class StrmExportService(
     {
         private ExportRunSnapshot(
             ConnectionInfo connectionInfo,
+            string configurationFingerprint,
             string? vodRoot,
             string? seriesRoot,
             IReadOnlyList<CategorySelection> vodSelections,
             IReadOnlyList<CategorySelection> seriesSelections)
         {
             ConnectionInfo = connectionInfo;
+            ConfigurationFingerprint = configurationFingerprint;
             VodRoot = vodRoot;
             SeriesRoot = seriesRoot;
             VodSelections = vodSelections;
@@ -442,6 +482,8 @@ public class StrmExportService(
         }
 
         public ConnectionInfo ConnectionInfo { get; }
+
+        public string ConfigurationFingerprint { get; }
 
         public string? VodRoot { get; }
 
@@ -469,6 +511,7 @@ public class StrmExportService(
 
             return new(
                 new ConnectionInfo(baseUrl, username, password),
+                StreamProxyConfigurationFingerprint.Create(configuration),
                 vodRoot,
                 seriesRoot,
                 CaptureSelections(configuration.Vod),

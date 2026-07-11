@@ -59,7 +59,13 @@ public class XtreamVodProvider(
         if (idStr is not null)
         {
             logger.LogDebug("Getting metadata for movie {Id}", idStr);
-            int id = int.Parse(idStr, CultureInfo.InvariantCulture);
+            if (!int.TryParse(idStr, NumberStyles.None, CultureInfo.InvariantCulture, out int id)
+                || id <= 0)
+            {
+                logger.LogWarning("Ignoring an invalid Xtream VOD provider identifier.");
+                return ItemUpdateType.None;
+            }
+
             VodStreamInfo vod = await xtreamClient.GetVodInfoAsync(Plugin.Instance.Creds, id, cancellationToken).ConfigureAwait(false);
             VodInfo? i = vod.Info;
 
@@ -75,7 +81,9 @@ public class XtreamVodProvider(
 
             if (i.Genre is string genres)
             {
-                item.Genres ??= genres.Split(',').Select(genre => genre.Trim()).ToArray();
+                item.Genres ??= genres.Split(
+                    ',',
+                    StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
             }
 
             if (!item.HasProviderId(MetadataProvider.Tmdb))

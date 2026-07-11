@@ -14,6 +14,7 @@
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 using System;
+using System.Buffers;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,6 +28,7 @@ internal sealed class SizeLimitedReadStream : Stream
 {
     private readonly Stream _inner;
     private readonly long _maximumBytes;
+    private readonly CancellationToken _readCancellationToken;
     private long _bytesRead;
 
     /// <summary>
@@ -34,12 +36,17 @@ internal sealed class SizeLimitedReadStream : Stream
     /// </summary>
     /// <param name="inner">The response stream.</param>
     /// <param name="maximumBytes">The maximum number of bytes that may be read.</param>
-    public SizeLimitedReadStream(Stream inner, long maximumBytes)
+    /// <param name="readCancellationToken">Cancels synchronous parser reads backed by asynchronous network reads.</param>
+    public SizeLimitedReadStream(
+        Stream inner,
+        long maximumBytes,
+        CancellationToken readCancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(inner);
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumBytes);
         _inner = inner;
         _maximumBytes = maximumBytes;
+        _readCancellationToken = readCancellationToken;
     }
 
     /// <inheritdoc />
@@ -69,7 +76,12 @@ internal sealed class SizeLimitedReadStream : Stream
     /// <inheritdoc />
     public override int Read(byte[] buffer, int offset, int count)
     {
-        int read = _inner.Read(buffer, offset, GetReadCount(count));
+        int read = _inner.ReadAsync(
+                buffer.AsMemory(offset, GetReadCount(count)),
+                _readCancellationToken)
+            .AsTask()
+            .GetAwaiter()
+            .GetResult();
         RecordRead(read);
         return read;
     }
@@ -77,17 +89,40 @@ internal sealed class SizeLimitedReadStream : Stream
     /// <inheritdoc />
     public override int Read(Span<byte> buffer)
     {
-        int read = _inner.Read(buffer[..GetReadCount(buffer.Length)]);
-        RecordRead(read);
-        return read;
+        int readCount = GetReadCount(buffer.Length);
+        if (readCount == 0)
+        {
+            return 0;
+        }
+
+        byte[] rentedBuffer = ArrayPool<byte>.Shared.Rent(readCount);
+        try
+        {
+            int read = _inner.ReadAsync(
+                    rentedBuffer.AsMemory(0, readCount),
+                    _readCancellationToken)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            rentedBuffer.AsSpan(0, read).CopyTo(buffer);
+            RecordRead(read);
+            return read;
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rentedBuffer);
+        }
     }
 
     /// <inheritdoc />
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
+        using CancellationTokenSource? linkedTokenSource = CreateLinkedTokenSource(cancellationToken);
+        CancellationToken effectiveToken = linkedTokenSource?.Token
+            ?? (_readCancellationToken.CanBeCanceled ? _readCancellationToken : cancellationToken);
         int read = await _inner.ReadAsync(
             buffer[..GetReadCount(buffer.Length)],
-            cancellationToken).ConfigureAwait(false);
+            effectiveToken).ConfigureAwait(false);
         RecordRead(read);
         return read;
     }
@@ -143,10 +178,25 @@ internal sealed class SizeLimitedReadStream : Stream
         int count,
         CancellationToken cancellationToken)
     {
+        using CancellationTokenSource? linkedTokenSource = CreateLinkedTokenSource(cancellationToken);
+        CancellationToken effectiveToken = linkedTokenSource?.Token
+            ?? (_readCancellationToken.CanBeCanceled ? _readCancellationToken : cancellationToken);
         int read = await _inner.ReadAsync(
             buffer.AsMemory(offset, GetReadCount(count)),
-            cancellationToken).ConfigureAwait(false);
+            effectiveToken).ConfigureAwait(false);
         RecordRead(read);
         return read;
+    }
+
+    private CancellationTokenSource? CreateLinkedTokenSource(CancellationToken cancellationToken)
+    {
+        if (!_readCancellationToken.CanBeCanceled
+            || !cancellationToken.CanBeCanceled
+            || cancellationToken == _readCancellationToken)
+        {
+            return null;
+        }
+
+        return CancellationTokenSource.CreateLinkedTokenSource(_readCancellationToken, cancellationToken);
     }
 }

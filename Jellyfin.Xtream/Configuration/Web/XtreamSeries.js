@@ -10,35 +10,44 @@ export default function (view) {
 
     const getConfig = ApiClient.getPluginConfiguration(pluginId);
     const visible = view.querySelector("#Visible");
-    getConfig.then((config) => visible.checked = config.IsSeriesVisible);
     const strmExportEnabled = view.querySelector("#StrmExportEnabled");
-    getConfig.then((config) => strmExportEnabled.checked = config.IsSeriesStrmExportEnabled);
     const strmExportPath = view.querySelector("#StrmExportPath");
-    getConfig.then((config) => strmExportPath.value = config.SeriesStrmExportPath || '');
+    let selectionData;
+    getConfig.then((config) => {
+      visible.checked = config.IsSeriesVisible;
+      strmExportEnabled.checked = config.IsSeriesStrmExportEnabled;
+      strmExportPath.value = config.SeriesStrmExportPath || '';
+      selectionData = config.Series;
+    });
+    view.querySelector('#XtreamSeriesForm').onsubmit = (e) => {
+      e.preventDefault();
+      Dashboard.showLoadingMsg();
+      ApiClient.getPluginConfiguration(pluginId)
+        .then((config) => {
+          config.IsSeriesVisible = visible.checked;
+          config.IsSeriesStrmExportEnabled = strmExportEnabled.checked;
+          config.SeriesStrmExportPath = strmExportPath.value;
+          if (selectionData !== undefined) {
+            config.Series = selectionData;
+          }
+
+          return ApiClient.updatePluginConfiguration(pluginId, config);
+        })
+        .then((result) => Dashboard.processPluginConfigurationUpdateResult(result))
+        .catch((error) => {
+          console.error('Failed to save series settings:', error);
+          Dashboard.hideLoadingMsg();
+        });
+      return false;
+    };
+    Xtream.setupLegacyStrmMigration(view, 'series');
     const table = view.querySelector('#SeriesContent');
     Xtream.populateCategoriesTable(
       table,
       () => getConfig.then((config) => config.Series),
       () => Xtream.fetchJson('Plugins/JellyfinXtream/v1/SeriesCategories'),
       (categoryId) => Xtream.fetchJson(`Plugins/JellyfinXtream/v1/SeriesCategories/${categoryId}`),
-    ).then((data) => {
-      view.querySelector('#XtreamSeriesForm').onsubmit = (e) => {
-        Dashboard.showLoadingMsg();
-
-        ApiClient.getPluginConfiguration(pluginId).then((config) => {
-          config.IsSeriesVisible = visible.checked;
-          config.IsSeriesStrmExportEnabled = strmExportEnabled.checked;
-          config.SeriesStrmExportPath = strmExportPath.value;
-          config.Series = data;
-          ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
-            Dashboard.processPluginConfigurationUpdateResult(result);
-          });
-        });
-
-        e.preventDefault();
-        return false;
-      };
-    }).catch((error) => {
+    ).then((data) => selectionData = data).catch((error) => {
       console.error('Failed to load series categories:', error);
       Dashboard.hideLoadingMsg();
       table.innerHTML = '';

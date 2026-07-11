@@ -192,6 +192,147 @@ const fetchJson = (url) => ApiClient.fetch({
   url: ApiClient.getUrl(url),
 });
 
+const postJson = (url, data) => ApiClient.fetch({
+  contentType: 'application/json',
+  data: JSON.stringify(data),
+  dataType: 'json',
+  type: 'POST',
+  url: ApiClient.getUrl(url),
+});
+
+const setupLegacyStrmMigration = (view, kind) => {
+  const previewButton = view.querySelector('#LegacyStrmPreview');
+  const quarantineButton = view.querySelector('#LegacyStrmQuarantine');
+  const result = view.querySelector('#LegacyStrmResult');
+  if (!previewButton || !quarantineButton || !result) {
+    return;
+  }
+
+  let previewId = null;
+  let previewCandidateCount = 0;
+  quarantineButton.disabled = true;
+  result.textContent = '';
+  previewButton.onclick = () => {
+    Dashboard.showLoadingMsg();
+    previewId = null;
+    previewCandidateCount = 0;
+    quarantineButton.disabled = true;
+    result.textContent = 'Scanning without changing files…';
+    fetchJson(`Plugins/JellyfinXtream/v1/LegacyStrmMigration/${kind}`)
+      .then((preview) => {
+        const count = preview.Candidates?.length || 0;
+        if (preview.Truncated) {
+          result.textContent = 'The scan reached its safety limit. Narrow the export folder before continuing.';
+          return;
+        }
+        if (preview.Incomplete) {
+          result.textContent = `The scan was incomplete because ${preview.SkippedPathCount || 1} path${preview.SkippedPathCount === 1 ? '' : 's'} could not be read. No files can be quarantined until that is fixed.`;
+          return;
+        }
+
+        previewId = preview.PreviewId;
+        previewCandidateCount = count;
+
+        result.textContent = count === 0
+          ? 'No high-confidence v0.8 plugin-generated STRM files were found.'
+          : `${count} high-confidence legacy file${count === 1 ? '' : 's'} found. No files have been changed.`;
+        if (count > 0) {
+          const details = document.createElement('details');
+          const summary = document.createElement('summary');
+          summary.textContent = 'Review every matched path before quarantining';
+          details.appendChild(summary);
+          const list = document.createElement('ul');
+          details.appendChild(list);
+
+          const pageSize = 200;
+          const pageCount = Math.ceil(count / pageSize);
+          let currentPage = 0;
+          const controls = document.createElement('div');
+          const previousPage = document.createElement('button');
+          previousPage.type = 'button';
+          previousPage.textContent = 'Previous paths';
+          const pageStatus = document.createElement('span');
+          pageStatus.style.margin = '0 12px';
+          const nextPage = document.createElement('button');
+          nextPage.type = 'button';
+          nextPage.textContent = 'Next paths';
+          controls.append(previousPage, pageStatus, nextPage);
+
+          const renderPage = () => {
+            const start = currentPage * pageSize;
+            const end = Math.min(start + pageSize, count);
+            list.replaceChildren();
+            preview.Candidates.slice(start, end).forEach((candidate) => {
+              const item = document.createElement('li');
+              item.textContent = candidate.RelativePath;
+              list.appendChild(item);
+            });
+            pageStatus.textContent = `Paths ${start + 1}-${end} of ${count} (page ${currentPage + 1} of ${pageCount})`;
+            previousPage.disabled = currentPage === 0;
+            nextPage.disabled = currentPage === pageCount - 1;
+          };
+          previousPage.onclick = () => {
+            currentPage--;
+            renderPage();
+          };
+          nextPage.onclick = () => {
+            currentPage++;
+            renderPage();
+          };
+          renderPage();
+          if (pageCount > 1) {
+            details.appendChild(controls);
+          }
+
+          result.appendChild(details);
+        }
+
+        quarantineButton.disabled = count === 0;
+      })
+      .catch((error) => {
+        console.error('Failed to preview legacy STRM migration:', error);
+        result.textContent = 'The preview failed. Save a valid export folder and check the server log.';
+      })
+      .finally(() => Dashboard.hideLoadingMsg());
+  };
+
+  quarantineButton.onclick = () => {
+    if (!previewId) {
+      result.textContent = 'This preview is no longer available. Preview the files again.';
+      return;
+    }
+
+    if (!window.confirm(`Move all ${previewCandidateCount} matched legacy STRM files into quarantine? Confirm only after reviewing every page. Manual and unrecognized files will remain in place.`)) {
+      return;
+    }
+
+    Dashboard.showLoadingMsg();
+    quarantineButton.disabled = true;
+    postJson(
+      `Plugins/JellyfinXtream/v1/LegacyStrmMigration/${kind}/Quarantine`,
+      { PreviewId: previewId }
+    )
+      .then((migration) => {
+        previewId = null;
+        previewCandidateCount = 0;
+        const count = migration.QuarantinedCount || 0;
+        const skipped = migration.SkippedCount || 0;
+        result.textContent = `${count} legacy file${count === 1 ? '' : 's'} quarantined` +
+          (skipped ? `; ${skipped} changed or unsafe file${skipped === 1 ? '' : 's'} skipped.` : '.') +
+          (migration.QuarantinePath
+            ? ` Batch and migration report: ${migration.QuarantinePath}. Files are retained with a .quarantined suffix for manual recovery.`
+            : '');
+      })
+      .catch((error) => {
+        previewId = null;
+        previewCandidateCount = 0;
+        console.error('Failed to quarantine legacy STRM files:', error);
+        result.textContent = 'Quarantine failed or the preview expired. Preview the files again and check the server log.';
+      })
+      .finally(() => Dashboard.hideLoadingMsg());
+  };
+};
+
 const filter = (obj, predicate) => Object.keys(obj)
   .filter(key => predicate(obj[key]))
   .reduce((res, key) => (res[key] = obj[key], res), {});
@@ -233,5 +374,6 @@ export default {
   filter,
   pluginConfig,
   populateCategoriesTable,
+  setupLegacyStrmMigration,
   setTabs,
 }

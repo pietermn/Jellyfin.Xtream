@@ -45,9 +45,10 @@ internal static class StreamUriBuilder
         int durationMinutes = 0)
     {
         if (!Uri.TryCreate(connection.BaseUrl.TrimEnd('/'), UriKind.Absolute, out Uri? baseUri)
-            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps))
+            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(baseUri.UserInfo))
         {
-            throw new ArgumentException("The Xtream base URL must be an absolute HTTP or HTTPS URL.", nameof(connection));
+            throw new ArgumentException("The Xtream base URL must be an absolute HTTP or HTTPS URL without user information.", nameof(connection));
         }
 
         if (type == StreamType.CatchUp)

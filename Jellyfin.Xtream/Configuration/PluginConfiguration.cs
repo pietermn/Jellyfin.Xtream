@@ -45,6 +45,11 @@ public class PluginConfiguration : BasePluginConfiguration
     public string UserAgent { get; set; } = string.Empty;
 
     /// <summary>
+    /// Gets or sets the optional public Jellyfin base URL used in proxy and STRM links.
+    /// </summary>
+    public string PublicServerUrl { get; set; } = string.Empty;
+
+    /// <summary>
     /// Gets or sets regex replacement rules applied to displayed stream names.
     /// </summary>
     public string NameCleanupRules { get; set; } = string.Empty;

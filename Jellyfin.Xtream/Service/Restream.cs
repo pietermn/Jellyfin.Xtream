@@ -20,7 +20,7 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using MediaBrowser.Common.Net;
+using Jellyfin.Xtream.Client;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Dto;
@@ -36,17 +36,16 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 {
     internal const int StreamBufferSize = 8 * 1024 * 1024;
 
-    private const int MaxRedirects = 5;
-
     /// <summary>
     /// The global constant for the restream tuner host.
     /// </summary>
     public const string TunerHost = "Xtream-Restream";
 
     private readonly WrappedBufferStream _buffer;
-    private readonly IHttpClientFactory _httpClientFactory;
     private readonly CancellationTokenSource _lifetimeTokenSource = new();
     private readonly ILogger _logger;
+    private readonly ProviderHttpClient _providerHttpClient;
+    private readonly Uri _providerBaseUri;
     private readonly Uri _sourceUri;
     private readonly object _syncRoot = new();
     private readonly string? _userAgent;
@@ -64,40 +63,47 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     /// Initializes a new instance of the <see cref="Restream"/> class.
     /// </summary>
     /// <param name="appHost">Instance of the <see cref="IServerApplicationHost"/> interface.</param>
-    /// <param name="httpClientFactory">Instance of the <see cref="IHttpClientFactory"/> interface.</param>
+    /// <param name="providerHttpClient">The credential-safe provider HTTP client.</param>
     /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
     /// <param name="mediaSource">The media which must be restreamed.</param>
-    public Restream(IServerApplicationHost appHost, IHttpClientFactory httpClientFactory, ILogger logger, MediaSourceInfo mediaSource)
+    public Restream(IServerApplicationHost appHost, ProviderHttpClient providerHttpClient, ILogger logger, MediaSourceInfo mediaSource)
         : this(
-            httpClientFactory,
+            providerHttpClient,
             logger,
             mediaSource,
-            path => appHost.GetSmartApiUrl(IPAddress.Any) + path,
+            path => PublicServerUrlPolicy.Resolve(
+                Plugin.Instance.Configuration.PublicServerUrl,
+                appHost.GetSmartApiUrl(IPAddress.Any)) + path,
             path => appHost.GetApiUrlForLocalAccess() + path,
             StreamBufferSize,
-            Plugin.Instance.Configuration.UserAgent)
+            Plugin.Instance.Configuration.UserAgent,
+            new Uri(Plugin.Instance.Creds.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute))
     {
     }
 
     internal Restream(
-        IHttpClientFactory httpClientFactory,
+        ProviderHttpClient providerHttpClient,
         ILogger logger,
         MediaSourceInfo mediaSource,
         Func<string, string> getPublicStreamUrl,
         Func<string, string> getLocalStreamUrl,
         int bufferSize,
-        string? userAgent)
+        string? userAgent,
+        Uri providerBaseUri)
     {
-        ArgumentNullException.ThrowIfNull(httpClientFactory);
+        ArgumentNullException.ThrowIfNull(providerHttpClient);
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(mediaSource);
         ArgumentNullException.ThrowIfNull(getPublicStreamUrl);
         ArgumentNullException.ThrowIfNull(getLocalStreamUrl);
+        ArgumentNullException.ThrowIfNull(providerBaseUri);
         ArgumentException.ThrowIfNullOrWhiteSpace(mediaSource.Path);
 
-        _httpClientFactory = httpClientFactory;
         _logger = logger;
+        _providerHttpClient = providerHttpClient;
+        _providerBaseUri = providerBaseUri;
         _sourceUri = new Uri(mediaSource.Path, UriKind.Absolute);
+        ProviderRedirectPolicy.EnsureSameOrigin(_providerBaseUri, _sourceUri);
         _userAgent = userAgent;
         _buffer = new WrappedBufferStream(bufferSize);
 
@@ -251,7 +257,7 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         Stream? inputStream = null;
         try
         {
-            response = await SendStreamRequestWithRedirectsAsync(_sourceUri, linkedTokenSource.Token).ConfigureAwait(false);
+            response = await SendStreamRequestAsync(_sourceUri, linkedTokenSource.Token).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
             inputStream = await response.Content.ReadAsStreamAsync(linkedTokenSource.Token).ConfigureAwait(false);
 
@@ -385,38 +391,6 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         }
     }
 
-    private async Task<HttpResponseMessage> SendStreamRequestWithRedirectsAsync(Uri initialUri, CancellationToken cancellationToken)
-    {
-        Uri currentUri = initialUri;
-        for (int redirectCount = 0; ; redirectCount++)
-        {
-            HttpResponseMessage response = await SendStreamRequestAsync(currentUri, cancellationToken).ConfigureAwait(false);
-            if (!IsRedirect(response.StatusCode))
-            {
-                return response;
-            }
-
-            Uri? location = response.Headers.Location;
-            if (location is null)
-            {
-                response.Dispose();
-                throw new HttpRequestException("The upstream stream returned a redirect without a location.");
-            }
-
-            if (redirectCount >= MaxRedirects)
-            {
-                HttpStatusCode statusCode = response.StatusCode;
-                response.Dispose();
-                throw new HttpRequestException("The upstream stream exceeded the redirect limit.", null, statusCode);
-            }
-
-            Uri redirectBase = response.RequestMessage?.RequestUri ?? currentUri;
-            currentUri = location.IsAbsoluteUri ? location : new Uri(redirectBase, location);
-            response.Dispose();
-            _logger.LogDebug("Following upstream redirect for channel {ChannelId}.", MediaSource.Id);
-        }
-    }
-
     private async Task<HttpResponseMessage> SendStreamRequestAsync(Uri uri, CancellationToken cancellationToken)
     {
         using HttpRequestMessage request = new(HttpMethod.Get, uri);
@@ -425,13 +399,13 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
             request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
         }
 
-        return await _httpClientFactory.CreateClient(NamedClient.Default)
-            .SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+        return await _providerHttpClient.SendAsync(
+                request,
+                _providerBaseUri,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken)
             .ConfigureAwait(false);
     }
-
-    private static bool IsRedirect(HttpStatusCode statusCode)
-        => (int)statusCode is 301 or 302 or 303 or 307 or 308;
 
     private async ValueTask DisposeTransportAsync()
     {

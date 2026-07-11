@@ -1,4 +1,5 @@
 using System.Net;
+using Jellyfin.Xtream.Client;
 using Jellyfin.Xtream.Service;
 using MediaBrowser.Model.Dto;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -22,8 +23,8 @@ public class RestreamTests
             {
                 Content = new StreamContent(upstream),
             });
-        using TestHttpClientFactory factory = new(handler);
-        using Restream restream = CreateRestream(factory);
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
 
         await restream.Open(CancellationToken.None);
         await restream.Open(CancellationToken.None);
@@ -52,8 +53,8 @@ public class RestreamTests
             {
                 Content = new StreamContent(upstream),
             });
-        using TestHttpClientFactory factory = new(handler);
-        using Restream restream = CreateRestream(factory);
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
         await restream.Open(CancellationToken.None);
         await using Stream reader = restream.GetStream();
         ValueTask<int> pendingRead = reader.ReadAsync(new byte[1]);
@@ -75,8 +76,8 @@ public class RestreamTests
             {
                 Content = new StreamContent(upstream),
             });
-        using TestHttpClientFactory factory = new(handler);
-        using Restream restream = CreateRestream(factory);
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
 
         await restream.Open(CancellationToken.None);
         await using Stream reader = restream.GetStream();
@@ -99,8 +100,8 @@ public class RestreamTests
             {
                 Content = new StreamContent(upstream),
             });
-        using TestHttpClientFactory factory = new(handler);
-        using Restream restream = CreateRestream(factory);
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
 
         await Assert.ThrowsAsync<HttpRequestException>(() => restream.Open(CancellationToken.None));
 
@@ -124,8 +125,8 @@ public class RestreamTests
             {
                 Content = new ByteArrayContent([99]),
             });
-        using TestHttpClientFactory factory = new(handler);
-        using Restream restream = CreateRestream(factory, userAgent: "Xtream-Test/1.0");
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient, userAgent: "Xtream-Test/1.0");
 
         await restream.Open(CancellationToken.None);
         await using Stream reader = restream.GetStream();
@@ -141,6 +142,46 @@ public class RestreamTests
     }
 
     [Fact]
+    public async Task CrossOriginRedirectIsRejectedWithoutContactingTarget()
+    {
+        using SequenceHandler handler = new(
+            _ =>
+            {
+                HttpResponseMessage response = new(HttpStatusCode.Redirect);
+                response.Headers.Location = new Uri("http://127.0.0.1/latest/meta-data/");
+                return response;
+            });
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
+
+        HttpRequestException exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => restream.Open(CancellationToken.None));
+
+        Assert.Contains("configured provider origin", exception.Message, StringComparison.Ordinal);
+        Assert.Single(handler.RequestUris);
+    }
+
+    [Fact]
+    public async Task PublicProviderHostnameResolvingToPrivateAddressIsRejected()
+    {
+        using SequenceHandler handler = new(
+            _ =>
+            {
+                HttpResponseMessage response = new(HttpStatusCode.TemporaryRedirect);
+                response.Headers.Location = new Uri("/redirected", UriKind.Relative);
+                return response;
+            });
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler, IPAddress.Loopback);
+        using Restream restream = CreateRestream(providerHttpClient);
+
+        HttpRequestException exception = await Assert.ThrowsAsync<HttpRequestException>(
+            () => restream.Open(CancellationToken.None));
+
+        Assert.Contains("resolved only to private or local", exception.Message, StringComparison.Ordinal);
+        Assert.Empty(handler.RequestUris);
+    }
+
+    [Fact]
     public void GetStreamBeforeOpenThrowsInsteadOfStartingBackgroundWork()
     {
         using SequenceHandler handler = new(
@@ -148,14 +189,14 @@ public class RestreamTests
             {
                 Content = new ByteArrayContent([]),
             });
-        using TestHttpClientFactory factory = new(handler);
-        using Restream restream = CreateRestream(factory);
+        using ProviderHttpClient providerHttpClient = CreateProviderClient(handler);
+        using Restream restream = CreateRestream(providerHttpClient);
 
         Assert.Throws<InvalidOperationException>(() => restream.GetStream());
         Assert.Empty(handler.RequestUris);
     }
 
-    private static Restream CreateRestream(TestHttpClientFactory factory, string? userAgent = null)
+    private static Restream CreateRestream(ProviderHttpClient providerHttpClient, string? userAgent = null)
     {
         MediaSourceInfo mediaSource = new()
         {
@@ -163,30 +204,20 @@ public class RestreamTests
             Path = "https://provider.example/live/user/password/1.ts",
         };
         return new Restream(
-            factory,
+            providerHttpClient,
             NullLogger.Instance,
             mediaSource,
             path => "https://jellyfin.example" + path,
             path => "http://127.0.0.1:8096" + path,
             4096,
-            userAgent);
+            userAgent,
+            new Uri("https://provider.example/"));
     }
 
-    private sealed class TestHttpClientFactory : IHttpClientFactory, IDisposable
+    private static ProviderHttpClient CreateProviderClient(HttpMessageHandler handler, params IPAddress[] addresses)
     {
-        private readonly HttpClient _client;
-
-        public TestHttpClientFactory(HttpMessageHandler handler)
-        {
-            _client = new HttpClient(handler, disposeHandler: false);
-        }
-
-        public HttpClient CreateClient(string name) => _client;
-
-        public void Dispose()
-        {
-            _client.Dispose();
-        }
+        IPAddress[] resolved = addresses.Length == 0 ? [IPAddress.Parse("93.184.216.34")] : addresses;
+        return new ProviderHttpClient(handler, (_, _) => Task.FromResult(resolved));
     }
 
     private sealed class SequenceHandler(params Func<HttpRequestMessage, HttpResponseMessage>[] responses) : HttpMessageHandler

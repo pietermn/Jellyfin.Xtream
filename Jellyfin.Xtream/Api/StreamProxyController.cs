@@ -18,8 +18,9 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jellyfin.Xtream.Client;
+using Jellyfin.Xtream.Configuration;
 using Jellyfin.Xtream.Service;
-using MediaBrowser.Common.Net;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -33,7 +34,9 @@ namespace Jellyfin.Xtream.Api;
 [ApiController]
 [AllowAnonymous]
 [Route("Plugins/JellyfinXtream/v1/Stream")]
-public sealed class StreamProxyController(IHttpClientFactory httpClientFactory) : ControllerBase
+public sealed class StreamProxyController(
+    ProviderHttpClient providerHttpClient,
+    StreamProxyTokenService tokenService) : ControllerBase
 {
     /// <summary>
     /// Proxies a signed provider stream.
@@ -43,6 +46,8 @@ public sealed class StreamProxyController(IHttpClientFactory httpClientFactory) 
     /// <param name="extension">The optional container extension.</param>
     /// <param name="startTicks">The optional catch-up start in ticks.</param>
     /// <param name="duration">The optional catch-up duration.</param>
+    /// <param name="keyId">The playback signing key identifier.</param>
+    /// <param name="expires">The playback grant expiry as Unix seconds.</param>
     /// <param name="signature">The request signature.</param>
     /// <param name="cancellationToken">The request cancellation token.</param>
     /// <returns>A task representing the proxy operation.</returns>
@@ -53,14 +58,32 @@ public sealed class StreamProxyController(IHttpClientFactory httpClientFactory) 
         string? extension,
         long? startTicks,
         int duration,
+        string keyId,
+        long expires,
         string signature,
         CancellationToken cancellationToken)
     {
-        XtreamConnectionInfo connection = Plugin.Instance.Creds;
+        StreamProxyCachePolicy.Apply(Response);
+        PluginConfiguration configuration = Plugin.Instance.Configuration;
+        XtreamConnectionInfo connection = new(
+            configuration.BaseUrl,
+            configuration.Username,
+            configuration.Password);
+        string configurationFingerprint = StreamProxyConfigurationFingerprint.Create(configuration);
         if (id <= 0
             || !Enum.IsDefined(type)
             || string.IsNullOrWhiteSpace(signature)
-            || !StreamProxySigner.Verify(connection, type, id, extension, startTicks, duration, signature))
+            || !tokenService.VerifyPlaybackGrant(
+                connection,
+                configurationFingerprint,
+                type,
+                id,
+                extension,
+                startTicks,
+                duration,
+                keyId,
+                expires,
+                signature))
         {
             Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
@@ -86,13 +109,16 @@ public sealed class StreamProxyController(IHttpClientFactory httpClientFactory) 
             upstreamRequest.Headers.TryAddWithoutValidation("Range", range.ToArray());
         }
 
-        string userAgent = Plugin.Instance.Configuration.UserAgent;
+        string userAgent = configuration.UserAgent;
         upstreamRequest.Headers.TryAddWithoutValidation(
             "User-Agent",
             string.IsNullOrWhiteSpace(userAgent) ? $"Jellyfin.Xtream/{typeof(Plugin).Assembly.GetName().Version}" : userAgent);
 
-        using HttpResponseMessage upstreamResponse = await httpClientFactory.CreateClient(NamedClient.Default)
-            .SendAsync(upstreamRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
+        using HttpResponseMessage upstreamResponse = await providerHttpClient.SendAsync(
+                upstreamRequest,
+                new Uri(connection.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute),
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken)
             .ConfigureAwait(false);
         Response.StatusCode = (int)upstreamResponse.StatusCode;
         CopyResponseHeaders(upstreamResponse, Response);

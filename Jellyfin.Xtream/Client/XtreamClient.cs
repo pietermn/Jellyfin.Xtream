@@ -37,9 +37,9 @@ namespace Jellyfin.Xtream.Client;
 /// <remarks>
 /// Initializes a new instance of the <see cref="XtreamClient"/> class.
 /// </remarks>
-/// <param name="client">The HTTP client used.</param>
+/// <param name="client">The credential-safe provider HTTP client.</param>
 /// <param name="logger">Instance of the <see cref="ILogger"/> interface.</param>
-public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDisposable, IXtreamClient
+public class XtreamClient(ProviderHttpClient client, ILogger<XtreamClient> logger) : IDisposable, IXtreamClient
 {
     private const int MaxQueryAttempts = 3;
     private const long MaxApiResponseBytes = 256L * 1024 * 1024;
@@ -104,7 +104,7 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
         CancellationToken cancellationToken)
     {
         Uri uri = BuildApiUri(connectionInfo, parameters);
-        using HttpResponseMessage response = await SendWithRetryAsync(uri, operation, cancellationToken).ConfigureAwait(false);
+        using HttpResponseMessage response = await SendWithRetryAsync(connectionInfo, uri, operation, cancellationToken).ConfigureAwait(false);
         if (response.Content.Headers.ContentLength is long contentLength && contentLength > MaxApiResponseBytes)
         {
             throw new HttpRequestException($"Xtream {operation} response exceeds the configured size limit.", null, HttpStatusCode.RequestEntityTooLarge);
@@ -113,7 +113,7 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
         Stream responseStream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using (responseStream.ConfigureAwait(false))
         {
-            using SizeLimitedReadStream limitedStream = new(responseStream, MaxApiResponseBytes);
+            using SizeLimitedReadStream limitedStream = new(responseStream, MaxApiResponseBytes, cancellationToken);
             using StreamReader streamReader = new(limitedStream, Encoding.UTF8, true, 16 * 1024, leaveOpen: true);
             using JsonTextReader jsonReader = new(streamReader)
             {
@@ -122,7 +122,9 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
             try
             {
                 JsonSerializer serializer = JsonSerializer.Create(_serializerSettings);
-                T? result = serializer.Deserialize<T>(jsonReader);
+                T? result = await Task.Run(
+                    () => serializer.Deserialize<T>(jsonReader),
+                    cancellationToken).ConfigureAwait(false);
                 return result ?? throw new JsonSerializationException("The JSON document did not contain the expected value.");
             }
             catch (JsonException ex)
@@ -136,15 +138,24 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
         }
     }
 
-    private async Task<HttpResponseMessage> SendWithRetryAsync(Uri uri, string operation, CancellationToken cancellationToken)
+    private async Task<HttpResponseMessage> SendWithRetryAsync(
+        ConnectionInfo connectionInfo,
+        Uri uri,
+        string operation,
+        CancellationToken cancellationToken)
     {
+        Uri providerBaseUri = GetProviderBaseUri(connectionInfo);
         for (int attempt = 1; attempt <= MaxQueryAttempts; attempt++)
         {
             using HttpRequestMessage request = new(HttpMethod.Get, uri);
             AddUserAgent(request);
             try
             {
-                HttpResponseMessage response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+                HttpResponseMessage response = await client.SendAsync(
+                    request,
+                    providerBaseUri,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken).ConfigureAwait(false);
                 if (response.IsSuccessStatusCode || attempt == MaxQueryAttempts || !IsTransient(response.StatusCode))
                 {
                     if (response.IsSuccessStatusCode)
@@ -192,16 +203,25 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
 
     private static Uri BuildApiUri(ConnectionInfo connectionInfo, IReadOnlyDictionary<string, string?> parameters)
     {
-        if (!Uri.TryCreate(connectionInfo.BaseUrl.TrimEnd('/') + "/player_api.php", UriKind.Absolute, out Uri? endpoint)
-            || (endpoint.Scheme != Uri.UriSchemeHttp && endpoint.Scheme != Uri.UriSchemeHttps))
-        {
-            throw new ArgumentException("The Xtream base URL must be an absolute HTTP or HTTPS URL.", nameof(connectionInfo));
-        }
+        Uri baseUri = GetProviderBaseUri(connectionInfo);
+        Uri endpoint = new(baseUri, baseUri.AbsolutePath.TrimEnd('/') + "/player_api.php");
 
         Dictionary<string, string?> query = parameters.ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.Ordinal);
         query["username"] = connectionInfo.UserName;
         query["password"] = connectionInfo.Password;
         return new Uri(QueryHelpers.AddQueryString(endpoint.ToString(), query));
+    }
+
+    private static Uri GetProviderBaseUri(ConnectionInfo connectionInfo)
+    {
+        if (!Uri.TryCreate(connectionInfo.BaseUrl.TrimEnd('/') + "/", UriKind.Absolute, out Uri? baseUri)
+            || (baseUri.Scheme != Uri.UriSchemeHttp && baseUri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrEmpty(baseUri.UserInfo))
+        {
+            throw new ArgumentException("The Xtream base URL must be an absolute HTTP or HTTPS URL without user information.", nameof(connectionInfo));
+        }
+
+        return baseUri;
     }
 
     private void AddUserAgent(HttpRequestMessage request)
@@ -320,7 +340,8 @@ public class XtreamClient(HttpClient client, ILogger<XtreamClient> logger) : IDi
     /// <param name="b">Unused.</param>
     protected virtual void Dispose(bool b)
     {
-        client?.Dispose();
+        _ = b;
+        // The provider client is a shared singleton whose lifetime is managed by dependency injection.
     }
 
     /// <inheritdoc />

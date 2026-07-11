@@ -15,7 +15,6 @@
 
 using System;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 #pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
@@ -41,7 +40,7 @@ public class Episode
     [JsonProperty("custom_sid")]
     public string CustomSid { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("added")]
     public DateTime? Added { get; set; }
 

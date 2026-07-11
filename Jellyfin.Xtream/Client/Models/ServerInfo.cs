@@ -15,7 +15,6 @@
 
 using System;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 
 #pragma warning disable CS1591
 namespace Jellyfin.Xtream.Client.Models;
@@ -34,7 +33,7 @@ public class ServerInfo
     [JsonProperty("timezone")]
     public string Timezone { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(UnixDateTimeConverter))]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     [JsonProperty("timestamp_now")]
     public DateTime TimeNow { get; set; }
 }

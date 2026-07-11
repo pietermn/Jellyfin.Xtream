@@ -22,6 +22,7 @@ namespace Jellyfin.Xtream.Client.Models;
 public class Season
 {
     [JsonProperty("air_date")]
+    [JsonConverter(typeof(TolerantDateTimeConverter))]
     public DateTime? AirDate { get; set; }
 
     [JsonProperty("episode_count")]

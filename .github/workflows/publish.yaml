@@ -5,6 +5,11 @@ on:
     types:
       - released
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing release tag to validate, build, and upload"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -14,8 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.release.tag_name || inputs.release_tag }}
+      - name: Require the workflow commit to match the release tag
+        env:
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$WORKFLOW_SHA"
       - name: Validate release metadata
-        run: ./scripts/validate-release-metadata.sh "${{ github.event.release.tag_name || github.ref_name }}"
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
+        run: ./scripts/validate-release-metadata.sh "$RELEASE_TAG"
   build:
     needs: validate
     uses: jellyfin/jellyfin-meta-plugins/.github/workflows/build.yaml@91aa56610cd3321f8897bbe2657c1743b3df3436
@@ -44,7 +58,7 @@ jobs:
         id: release
         uses: actions/github-script@v7
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag }}
         with:
           script: |-
             if (context.payload.release?.upload_url) {

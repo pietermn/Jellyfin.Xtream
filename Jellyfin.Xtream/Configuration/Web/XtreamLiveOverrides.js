@@ -10,7 +10,7 @@ export default function (view) {
     number.placeholder = channel.Number;
     number.value = overrides.Number ?? '';
     number.onchange = () => number.value ?
-      overrides.Number = parseInt(number.value) :
+      overrides.Number = parseInt(number.value, 10) :
       delete overrides.Number;
     td.appendChild(number);
     tr.appendChild(td);
@@ -31,7 +31,7 @@ export default function (view) {
     const image = document.createElement('input');
     image.type = 'text';
     image.setAttribute('is', 'emby-input');
-    image.placeholder = channel.LogoUrl;
+    image.placeholder = channel.LogoUrl || '';
     image.value = overrides.LogoUrl ?? '';
     image.onchange = () => image.value ?
       overrides.LogoUrl = image.value :
@@ -53,34 +53,49 @@ export default function (view) {
 
     const getConfig = ApiClient.getPluginConfiguration(pluginId);
     const table = view.querySelector('#LiveChannels');
+    table.replaceChildren();
+    let overrideData;
+    getConfig.then((config) => overrideData = config.LiveTvOverrides || {});
+    view.querySelector('#XtreamLiveOverridesForm').onsubmit = (e) => {
+      e.preventDefault();
+      Dashboard.showLoadingMsg();
+      ApiClient.getPluginConfiguration(pluginId)
+        .then((config) => {
+          const data = overrideData ?? config.LiveTvOverrides ?? {};
+          config.LiveTvOverrides = Xtream.filter(
+            data,
+            overrides => Object.keys(overrides).length > 0
+          );
+          return ApiClient.updatePluginConfiguration(pluginId, config);
+        })
+        .then((result) => Dashboard.processPluginConfigurationUpdateResult(result))
+        .catch((error) => {
+          console.error('Failed to save Live TV overrides:', error);
+          Dashboard.hideLoadingMsg();
+        });
+      return false;
+    };
+
     Dashboard.showLoadingMsg();
     Promise.all([
       getConfig.then((config) => config.LiveTvOverrides),
       Xtream.fetchJson('Plugins/JellyfinXtream/v1/LiveTv'),
     ]).then(([data, channels]) => {
+      overrideData = data || {};
       for (const channel of channels) {
-        data[channel.Id] ??= {};
-        const row = createChannelRow(channel, data[channel.Id]);
+        overrideData[channel.Id] ??= {};
+        const row = createChannelRow(channel, overrideData[channel.Id]);
         table.appendChild(row);
       }
-      Dashboard.hideLoadingMsg();
-
-      view.querySelector('#XtreamLiveOverridesForm').onsubmit = (e) => {
-        Dashboard.showLoadingMsg();
-
-        ApiClient.getPluginConfiguration(pluginId).then((config) => {
-          config.LiveTvOverrides = Xtream.filter(
-            data,
-            overrides => Object.keys(overrides).length > 0
-          );
-          ApiClient.updatePluginConfiguration(pluginId, config).then((result) => {
-            Dashboard.processPluginConfigurationUpdateResult(result);
-          });
-        });
-
-        e.preventDefault();
-        return false;
-      };
-    });
+    }).catch((error) => {
+      console.error('Failed to load Live TV overrides:', error);
+      table.replaceChildren();
+      const errorRow = document.createElement('tr');
+      const errorCell = document.createElement('td');
+      errorCell.colSpan = 3;
+      errorCell.textContent = 'Failed to load channels. Existing overrides were not changed.';
+      errorRow.appendChild(errorCell);
+      table.appendChild(errorRow);
+    }).finally(() => Dashboard.hideLoadingMsg());
   }));
 }
