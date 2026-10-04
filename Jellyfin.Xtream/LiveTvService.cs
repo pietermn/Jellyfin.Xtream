@@ -146,7 +146,11 @@ public class LiveTvService(
     /// <inheritdoc />
     public Task CloseLiveStream(string id, CancellationToken cancellationToken)
     {
-        logger.LogInformation("Closing livestream {ChannelId}", id);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation("Closing livestream {ChannelId}", id);
+        }
+
         return Task.CompletedTask;
     }
 

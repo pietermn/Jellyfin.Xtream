@@ -7,6 +7,10 @@
 
 The Jellyfin.Xtream plugin can be used to integrate the content provided by an [Xtream-compatible API](https://xtream-ui.org/api-xtreamui-xtreamcode/) in your [Jellyfin](https://jellyfin.org/) instance.
 
+## Compatibility
+
+Plugin v0.10.0 targets Jellyfin 12.1 and .NET 10. For Jellyfin 10.11, use v0.9.12.
+
 ## Installation
 
 The plugin can be installed using a custom plugin repository.

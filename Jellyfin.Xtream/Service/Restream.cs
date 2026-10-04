@@ -196,7 +196,11 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
                 throw new InvalidOperationException("The restream has not been opened successfully.");
             }
 
-            _logger.LogInformation("Opening restream {Count} for channel {ChannelId}.", ConsumerCount, MediaSource.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Opening restream {Count} for channel {ChannelId}.", ConsumerCount, MediaSource.Id);
+            }
+
             return new WrappedBufferReadStream(_buffer);
         }
     }
@@ -257,7 +261,10 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
     private async Task OpenCoreAsync(CancellationToken openCancellationToken)
     {
         string channelId = MediaSource.Id;
-        _logger.LogInformation("Starting restream for channel {ChannelId}.", channelId);
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation("Starting restream for channel {ChannelId}.", channelId);
+        }
 
         using CancellationTokenSource linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(
             openCancellationToken,
@@ -280,7 +287,10 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
 
                 _response = response;
                 _inputStream = inputStream;
+                // Transport ownership passes to the fields; copy and close coordinate disposal under _syncRoot.
+#pragma warning disable CA2025 // Ownership is transferred, rather than disposed by this method.
                 _copyTask = CopyInputToBufferAsync(response, inputStream, _lifetimeTokenSource.Token);
+#pragma warning restore CA2025
                 response = null;
                 inputStream = null;
             }
@@ -318,11 +328,17 @@ public class Restream : ILiveStream, IDirectStreamProvider, IDisposable
         try
         {
             await inputStream.CopyToAsync(_buffer, cancellationToken).ConfigureAwait(false);
-            _logger.LogInformation("Restream for channel {ChannelId} reached the end of the upstream stream.", MediaSource.Id);
+            if (_logger.IsEnabled(LogLevel.Information))
+            {
+                _logger.LogInformation("Restream for channel {ChannelId} reached the end of the upstream stream.", MediaSource.Id);
+            }
         }
         catch (Exception) when (cancellationToken.IsCancellationRequested)
         {
-            _logger.LogDebug("Restream for channel {ChannelId} was canceled.", MediaSource.Id);
+            if (_logger.IsEnabled(LogLevel.Debug))
+            {
+                _logger.LogDebug("Restream for channel {ChannelId} was canceled.", MediaSource.Id);
+            }
         }
         catch (Exception ex)
         {

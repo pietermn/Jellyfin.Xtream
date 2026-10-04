@@ -8,7 +8,7 @@ fi
 
 owner="$1"
 repo="$2"
-version="${3:-0.9.12.0}"
+version="${3:-0.10.0.0}"
 tag="v${version%".0"}"
 zip_name="jelly-xtream_${version}.zip"
 dist_zip="dist/${zip_name}"
@@ -39,10 +39,10 @@ cat > "$output" <<JSON
     "owner": "${owner}",
     "versions": [
       {
-        "changelog": "Rework Live TV name normalization, make STRM reconciliation manifest-owned and atomic, and improve streaming performance and reliability.",
+        "changelog": "Add compatibility with Jellyfin 12.1 and .NET 10.",
         "checksum": "${checksum}",
         "sourceUrl": "${source_url}",
-        "targetAbi": "10.11.0.0",
+        "targetAbi": "12.1.0.0",
         "timestamp": "${timestamp}",
         "version": "${version}"
       }

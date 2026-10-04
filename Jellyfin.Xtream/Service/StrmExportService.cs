@@ -198,9 +198,12 @@ public class StrmExportService(
             duplicateCount -= streamsToExport.Count;
             if (duplicateCount > 0)
             {
-                logger.LogInformation(
-                    "Skipped {Count} duplicate VOD items before STRM export.",
-                    duplicateCount);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation(
+                        "Skipped {Count} duplicate VOD items before STRM export.",
+                        duplicateCount);
+                }
             }
         }
 
@@ -224,7 +227,11 @@ public class StrmExportService(
                     stream.StreamId,
                     stream.ContainerExtension);
 
-                logger.LogDebug("Exporting VOD STRM file for stream {StreamId}.", stream.StreamId);
+                if (logger.IsEnabled(LogLevel.Debug))
+                {
+                    logger.LogDebug("Exporting VOD STRM file for stream {StreamId}.", stream.StreamId);
+                }
+
                 await StrmExportManifestStore.WriteTextAtomicallyAsync(
                     path,
                     url + Environment.NewLine,
@@ -336,9 +343,12 @@ public class StrmExportService(
             duplicateCount -= seriesToExport.Count;
             if (duplicateCount > 0)
             {
-                logger.LogInformation(
-                    "Skipped {Count} duplicate series before fetching episode details for STRM export.",
-                    duplicateCount);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation(
+                        "Skipped {Count} duplicate series before fetching episode details for STRM export.",
+                        duplicateCount);
+                }
             }
         }
 
@@ -442,10 +452,14 @@ public class StrmExportService(
                 episode.EpisodeId,
                 episode.ContainerExtension);
 
-            logger.LogDebug(
-                "Exporting series STRM file for series {SeriesId}, episode {EpisodeId}.",
-                series.SeriesId,
-                episode.EpisodeId);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug(
+                    "Exporting series STRM file for series {SeriesId}, episode {EpisodeId}.",
+                    series.SeriesId,
+                    episode.EpisodeId);
+            }
+
             await StrmExportManifestStore.WriteTextAtomicallyAsync(
                 path,
                 url + Environment.NewLine,
@@ -530,10 +544,13 @@ public class StrmExportService(
             if (expectedEntries.Count > 0)
             {
                 await manifestStore.CommitWithoutReconciliationAsync(expectedEntries, cancellationToken).ConfigureAwait(false);
-                logger.LogInformation(
-                    "Committed {Count} successful {ExportKind} STRM entries without stale-file deletion.",
-                    expectedEntries.Count,
-                    exportKind);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation(
+                        "Committed {Count} successful {ExportKind} STRM entries without stale-file deletion.",
+                        expectedEntries.Count,
+                        exportKind);
+                }
             }
 
             return;
@@ -561,11 +578,14 @@ public class StrmExportService(
             expectedEntries,
             managedIdentityTags,
             cancellationToken).ConfigureAwait(false);
-        logger.LogInformation(
-            "Reconciled {Count} {ExportKind} STRM entries and removed {DeletedCount} stale managed files.",
-            expectedEntries.Count,
-            exportKind,
-            deleted);
+        if (logger.IsEnabled(LogLevel.Information))
+        {
+            logger.LogInformation(
+                "Reconciled {Count} {ExportKind} STRM entries and removed {DeletedCount} stale managed files.",
+                expectedEntries.Count,
+                exportKind,
+                deleted);
+        }
     }
 
     private sealed record CategorySelection(int CategoryId, HashSet<int> ItemIds)

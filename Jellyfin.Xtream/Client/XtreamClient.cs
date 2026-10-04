@@ -90,7 +90,11 @@ public class XtreamClient(ProviderHttpClient client, ILogger<XtreamClient> logge
 
                 if (property != null && Nullable.GetUnderlyingType(property.PropertyType) != null)
                 {
-                    logger.LogDebug("Ignoring invalid nullable Xtream property {Property} ({JsonName}).", property.Name, jsonName);
+                    if (logger.IsEnabled(LogLevel.Debug))
+                    {
+                        logger.LogDebug("Ignoring invalid nullable Xtream property {Property} ({JsonName}).", property.Name, jsonName);
+                    }
+
                     args.ErrorContext.Handled = true;
                 }
             }

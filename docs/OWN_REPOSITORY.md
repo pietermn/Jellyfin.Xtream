@@ -28,5 +28,5 @@ https://<github-user>.github.io/<repository-name>/repository.json
 
 ## Notes
 
-This custom build targets Jellyfin `10.11.11`.
+This custom build targets Jellyfin `12.1` and requires .NET 10. For Jellyfin 10.11, use plugin v0.9.12.
 If your server runs another Jellyfin version, update `targetAbi` in `build.yaml` and the Jellyfin package versions in `Jellyfin.Xtream/Jellyfin.Xtream.csproj` before publishing.

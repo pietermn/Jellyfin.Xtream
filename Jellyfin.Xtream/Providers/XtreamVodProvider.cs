@@ -58,7 +58,11 @@ public class XtreamVodProvider(
         string? idStr = item.GetProviderId(ProviderName);
         if (idStr is not null)
         {
-            logger.LogDebug("Getting metadata for movie {Id}", idStr);
+            if (logger.IsEnabled(LogLevel.Debug))
+            {
+                logger.LogDebug("Getting metadata for movie {Id}", idStr);
+            }
+
             if (!int.TryParse(idStr, NumberStyles.None, CultureInfo.InvariantCulture, out int id)
                 || id <= 0)
             {
