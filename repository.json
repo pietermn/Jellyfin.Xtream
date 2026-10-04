@@ -8,6 +8,14 @@
     "owner": "pietermn",
     "versions": [
       {
+        "changelog": "Jellyfin.Xtream v0.10.0 adds support for Jellyfin Server 12.1.\n\n- Target .NET 10 and Jellyfin.Common/Controller/Model 12.1.0.\n- Set the plugin catalog ABI to 12.1.0.0 and update the build, test, and publish workflows.\n- Avoid evaluating disabled log arguments under the .NET 10 analyzers and document coordinated restream transport ownership.\n\nValidation: all 147 tests pass in both Debug and Release on .NET 10; release metadata checks pass. Live playback against a running Jellyfin 12.1 server has not been exercised.\n\nRequires Jellyfin 12.1 or later. For Jellyfin 10.11, continue using v0.9.12. Install through the plugin catalog and restart Jellyfin after upgrading.\n",
+        "checksum": "681783c071d1ec339638bf58d5d8ace9",
+        "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.10.0/jelly-xtream_0.10.0.0.zip",
+        "targetAbi": "12.1.0.0",
+        "timestamp": "2026-10-04T22:21:46Z",
+        "version": "0.10.0.0"
+      },
+      {
         "changelog": "Use verified TMDB IDs and release years for conservative VOD STRM deduplication. Export managed movie NFO sidecars to prevent incorrect filename-based Jellyfin metadata matches.",
         "checksum": "750cfd4ba7c02fedd98602eeb7f0b09c",
         "sourceUrl": "https://github.com/pietermn/Jellyfin.Xtream/releases/download/v0.9.12/jelly-xtream_0.9.12.0.zip",
